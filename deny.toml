@@ -1,0 +1,50 @@
+# Configuration for cargo-deny: dependency licences, security advisories, banned or duplicate
+# crates, and allowed sources. Run with `cargo deny check`.
+
+[graph]
+all-features = true
+
+[advisories]
+# Every advisory (vulnerability, unmaintained, unsound, yanked) fails the check unless it is
+# listed in `ignore` with a reason.
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# Only these licences are accepted. Anything else needs an explicit, per-crate exception below.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.9
+# The allow list is policy, not an inventory: an allowed licence that no dependency uses yet is
+# not worth a warning.
+unused-allowed-license = "allow"
+exceptions = []
+
+[licenses.private]
+# Our own unpublished workspace crates carry `publish = false` and are checked by their
+# `license` field like any other crate.
+ignore = false
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

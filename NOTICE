@@ -1,0 +1,15 @@
+matter-rs
+Copyright 2026 matter-rs authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+matter-rs uses rs-matter (https://github.com/project-chip/rs-matter) as its Matter engine. The
+following projects, all licensed under the Apache License, Version 2.0, serve as references for
+behaviour and architecture; no code is copied from them:
+
+- rs-matter (https://github.com/project-chip/rs-matter)
+- matter.js (https://github.com/project-chip/matter.js)
+- connectedhomeip (https://github.com/project-chip/connectedhomeip)
+
+Matter is a trademark of the Connectivity Standards Alliance. matter-rs is an independent
+project and is neither affiliated with nor certified by the Connectivity Standards Alliance.
