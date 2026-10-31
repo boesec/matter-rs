@@ -1,0 +1,14 @@
+# Build output
+/target/
+
+# Reference clones (read-only references, not part of this repository)
+/matter.js/
+/connectedhomeip/
+/rs-matter/
+/matterbridge/
+
+# Local-only planning and agent configuration
+/Docs/
+/CLAUDE.md
+/.claude/
+youtrack.json
