@@ -12,3 +12,18 @@
 /CLAUDE.md
 /.claude/
 youtrack.json
+
+# Editors and IDEs
+/.vscode/
+/.idea/
+*.iml
+*.swp
+*.swo
+*~
+.#*
+
+# Operating system noise
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
