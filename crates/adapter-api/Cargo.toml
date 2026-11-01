@@ -1,0 +1,25 @@
+[package]
+name = "matter-rs-adapter-api"
+description = "Adapter contract of matter-rs: the trait and types every adapter implements."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[features]
+default = ["std"]
+# Links the standard library. Without it the crate is `no_std` and relies on `alloc` only.
+std = ["matter-rs-engine/std", "matter-rs-bridge?/std", "thiserror/std"]
+# The part of the contract that adapters use to feed a bridge. Selected by the binary's
+# `role-bridge` feature.
+role-bridge = ["dep:matter-rs-bridge"]
+
+[dependencies]
+matter-rs-engine = { workspace = true }
+matter-rs-bridge = { workspace = true, optional = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

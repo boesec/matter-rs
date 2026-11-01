@@ -1,0 +1,16 @@
+[package]
+name = "matter-rs-engine-rsmatter"
+description = "Engine implementation of matter-rs on rs-matter: the only crate that depends on rs-matter."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+matter-rs-engine = { workspace = true, features = ["std"] }
+thiserror = { workspace = true, features = ["std"] }
+
+[lints]
+workspace = true
