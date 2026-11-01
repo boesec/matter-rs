@@ -41,7 +41,9 @@ class MatterShell:
         name = self._config.container_name("shell")
         command = run_command(
             self._config.matterjs_image,
-            ("node_modules/.bin/matter-shell", str(self._node_num)),
+            # The shell's entry point is called directly: the lockfile carries no `bin` entry for
+            # the package, so `npm ci` creates no `node_modules/.bin/matter-shell` link.
+            ("node", "node_modules/@matter/nodejs-shell/dist/cjs/app.js", str(self._node_num)),
             name=name,
             interactive=True,
             mounts=((self.volume, "/state", False),),
