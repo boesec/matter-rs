@@ -1,0 +1,161 @@
+# Interop harness: chip-tool, the connectedhomeip Python test framework and the matter.js shell in
+# pinned containers against a device under test. Everything about it, including the networking
+# findings for this runner, is in tests/interop/README.md.
+name: Interop
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # Nightly, 03:17 UTC.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: tests/interop
+
+jobs:
+  interop:
+    name: interop scenarios
+    # The certification image is published for linux/arm64 only, so the job runs on GitHub's
+    # arm64 runner instead of ubuntu-latest (amd64); see tests/interop/README.md.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    env:
+      INTEROP_REQUIRE_DOCKER: "1"
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show the runner's network before any change
+        run: |
+          ip -o link
+          ip -6 addr
+          echo "disable_ipv6(all)=$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6)"
+          (ss -lunp | grep -E ':5353|:5540' || true)
+          docker version --format 'docker {{.Server.Version}} {{.Server.Os}}/{{.Server.Arch}}'
+
+      # The runner has IPv6 in the kernel and a link-local address on its interface, but no
+      # routable IPv6 address. The ipv6only chip-tool and the Python controller must reach the
+      # device under test over IPv6; a unique-local address on the default-route interface gives
+      # every mDNS record a non-link-local AAAA to use.
+      - name: Enable IPv6 and add a unique-local address to the default interface
+        run: |
+          set -euxo pipefail
+          IFACE=$(ip -4 -o route show default | awk '{print $5}' | head -1)
+          test -n "$IFACE"
+          sudo sysctl -w net.ipv6.conf.all.disable_ipv6=0
+          sudo sysctl -w net.ipv6.conf.default.disable_ipv6=0
+          sudo sysctl -w "net.ipv6.conf.${IFACE}.disable_ipv6=0"
+          sudo ip -6 addr add fd12:3456:789a::1/64 dev "$IFACE"
+          ip -6 addr show dev "$IFACE"
+          ping -6 -c 1 ::1
+
+      # chip-tool in the certification image is built with platform mDNS: it talks to the host's
+      # avahi-daemon over the D-Bus socket that the containers mount.
+      - name: Install and start Avahi with IPv6
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -q
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q avahi-daemon avahi-utils
+          sudo sed -i -E 's/^#?use-ipv6=.*/use-ipv6=yes/; s/^#?use-ipv4=.*/use-ipv4=yes/' /etc/avahi/avahi-daemon.conf
+          grep -E '^(use-ipv6|use-ipv4)=' /etc/avahi/avahi-daemon.conf
+          sudo systemctl restart avahi-daemon
+          systemctl is-active avahi-daemon
+          ls -l /var/run/dbus/system_bus_socket
+          avahi-daemon --version
+          (avahi-browse -a -t -p || true) | head -20
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tests/interop/requirements.txt
+
+      - name: Install the pinned Python tools
+        run: python -m pip install -r requirements.txt
+
+      - name: Lint the harness (ruff)
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Pull the certification image (by digest)
+        run: |
+          IMAGE=$(python -c 'from harness.config import load_images; print(load_images()["chip"].pinned)')
+          echo "pulling $IMAGE"
+          docker pull --quiet "$IMAGE"
+          docker run --rm "$IMAGE" bash -c 'cat /root/.sdk-sha-version; ls /root/python_testing/scripts/sdk | head -5; /root/chip-tool --help 2>&1 | head -3'
+
+      # chip-tool and the Python controller reach the host's Avahi daemon over the mounted D-Bus
+      # socket. This step shows whether that connection works from inside the certification
+      # image, with Docker's default AppArmor profile and without it, so that a failure of the
+      # scenarios can be told apart from a networking problem.
+      - name: Probe D-Bus and Avahi from inside the certification image
+        continue-on-error: true
+        run: |
+          IMAGE=$(python -c 'from harness.config import load_images; print(load_images()["chip"].pinned)')
+          PROBE='echo "profile: $(cat /proc/self/attr/current 2>/dev/null)"; ls -la /run/dbus/ /var/run/dbus/ 2>&1; (avahi-browse -a -t -p 2>&1 | head -5); echo "avahi-browse exit: ${PIPESTATUS[0]}"'
+          echo "== default security profile"
+          docker run --rm --network host -v /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket "$IMAGE" bash -c "$PROBE" || true
+          echo "== apparmor=unconfined"
+          docker run --rm --network host --security-opt apparmor=unconfined -v /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket "$IMAGE" bash -c "$PROBE" || true
+          echo "== host"
+          (sudo aa-status 2>&1 | head -3) || true
+          sudo journalctl -u dbus --no-pager -n 20 2>&1 | grep -i -E "apparmor|avahi|denied" || echo "no dbus denials logged"
+
+      - name: Build the matter.js image
+        run: docker build -t matter-rs-interop-matterjs:local containers/matterjs
+
+      - name: Run the interop scenarios
+        run: |
+          set -o pipefail
+          python -m pytest -v 2>&1 | tee "$RUNNER_TEMP/pytest.log"
+
+      # Unauthenticated readers of the run cannot download artefacts; the tails on the console and
+      # the summary are what a failure is diagnosed from.
+      - name: Print the last lines of every collected log
+        if: always()
+        run: |
+          for f in $(find logs -type f | sort); do
+            echo "::group::$f"
+            tail -n 80 "$f" || true
+            echo "::endgroup::"
+          done
+
+      - name: Write the step summary
+        if: always()
+        run: |
+          {
+            echo "## Interop scenarios"
+            echo
+            echo '```'
+            grep -E "(PASSED|FAILED|ERROR|SKIPPED)" "$RUNNER_TEMP/pytest.log" | grep -E '::' || true
+            echo
+            tail -n 3 "$RUNNER_TEMP/pytest.log"
+            echo '```'
+            echo
+            echo "## Runner network"
+            echo
+            echo '```'
+            ip -6 addr
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cp "$RUNNER_TEMP/pytest.log" logs/pytest.log || true
+
+      - name: Upload the collected logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: interop-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: tests/interop/logs
+          retention-days: 14
+          if-no-files-found: warn

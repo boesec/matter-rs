@@ -27,3 +27,11 @@ youtrack.json
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+
+# Interop harness: Python and Node artefacts under tests/interop only
+/tests/interop/logs/
+/tests/interop/**/__pycache__/
+/tests/interop/.pytest_cache/
+/tests/interop/.ruff_cache/
+/tests/interop/.venv/
+/tests/interop/containers/matterjs/node_modules/
