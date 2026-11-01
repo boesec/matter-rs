@@ -182,6 +182,13 @@ fn validate_reports_every_error_with_its_location() {
         "[node]\npasscode = 11111111\ndiscriminator = 5000\ncolour = \"blue\"\n",
     )
     .unwrap();
+    // The file holds a plain passcode. With the default umask it would be readable by other
+    // users on Unix, which is a warning of its own; this test counts only the three errors.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
 
     let output = validate(&path);
     assert_exit(&output, 1);
