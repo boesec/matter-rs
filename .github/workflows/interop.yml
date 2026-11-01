@@ -95,6 +95,23 @@ jobs:
           docker pull --quiet "$IMAGE"
           docker run --rm "$IMAGE" bash -c 'cat /root/.sdk-sha-version; ls /root/python_testing/scripts/sdk | head -5; /root/chip-tool --help 2>&1 | head -3'
 
+      # chip-tool and the Python controller reach the host's Avahi daemon over the mounted D-Bus
+      # socket. This step shows whether that connection works from inside the certification
+      # image, with Docker's default AppArmor profile and without it, so that a failure of the
+      # scenarios can be told apart from a networking problem.
+      - name: Probe D-Bus and Avahi from inside the certification image
+        continue-on-error: true
+        run: |
+          IMAGE=$(python -c 'from harness.config import load_images; print(load_images()["chip"].pinned)')
+          PROBE='echo "profile: $(cat /proc/self/attr/current 2>/dev/null)"; ls -la /run/dbus/ /var/run/dbus/ 2>&1; (avahi-browse -a -t -p 2>&1 | head -5); echo "avahi-browse exit: ${PIPESTATUS[0]}"'
+          echo "== default security profile"
+          docker run --rm --network host -v /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket "$IMAGE" bash -c "$PROBE" || true
+          echo "== apparmor=unconfined"
+          docker run --rm --network host --security-opt apparmor=unconfined -v /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket "$IMAGE" bash -c "$PROBE" || true
+          echo "== host"
+          (sudo aa-status 2>&1 | head -3) || true
+          sudo journalctl -u dbus --no-pager -n 20 2>&1 | grep -i -E "apparmor|avahi|denied" || echo "no dbus denials logged"
+
       - name: Build the matter.js image
         run: docker build -t matter-rs-interop-matterjs:local containers/matterjs
 

@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 
 from harness.config import HarnessConfig
-from harness.docker import run_command
+from harness.docker import DBUS_CLIENT_SECURITY_OPTS, run_command
 from harness.process import HarnessError, ManagedProcess
 from harness.redact import Redactor
 
@@ -41,6 +41,7 @@ class ChipTool:
                 (self._config.dbus_socket, self._config.dbus_socket, False),
                 (self.volume, "/state", False),
             ),
+            security_opts=DBUS_CLIENT_SECURITY_OPTS,
         )
         process = ManagedProcess(
             f"chip-tool {label}",
