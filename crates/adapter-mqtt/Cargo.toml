@@ -1,0 +1,23 @@
+[package]
+name = "matter-rs-adapter-mqtt"
+description = "MQTT adapter of matter-rs, following the mqtt-smarthome conventions."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[features]
+default = []
+# Feeds a bridge. Selected by the binary's `role-bridge` feature.
+role-bridge = ["dep:matter-rs-bridge", "matter-rs-adapter-api/role-bridge"]
+
+[dependencies]
+matter-rs-engine = { workspace = true, features = ["std"] }
+matter-rs-bridge = { workspace = true, features = ["std"], optional = true }
+matter-rs-adapter-api = { workspace = true, features = ["std"] }
+thiserror = { workspace = true, features = ["std"] }
+
+[lints]
+workspace = true

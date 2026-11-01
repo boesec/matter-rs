@@ -56,6 +56,29 @@ jobs:
       - name: cargo test
         run: cargo test --workspace
 
+  no-std:
+    name: no_std tier
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # rust-toolchain.toml lists the bare-metal target, so rustup installs it with the toolchain.
+      - name: Install toolchain
+        run: rustup toolchain install
+      - name: cargo check (no_std crates on thumbv7em-none-eabihf)
+        run: cargo check -p matter-rs-engine -p matter-rs-adapter-api -p matter-rs-bridge --no-default-features --target thumbv7em-none-eabihf
+
+  features:
+    name: binary feature sets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: rustup toolchain install
+      - name: cargo check (bridge role only)
+        run: cargo check -p matter-rs --no-default-features --features role-bridge
+      - name: cargo check (default features)
+        run: cargo check -p matter-rs
+
   deny:
     name: cargo-deny
     runs-on: ubuntu-latest

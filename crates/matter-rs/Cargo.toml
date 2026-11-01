@@ -1,12 +1,41 @@
 [package]
 name = "matter-rs"
-description = "Matter bridge and controller in Rust (placeholder crate)."
+description = "Matter bridge and controller in Rust: the service binary that wires the roles and adapters selected by features."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 publish = false
+
+[[bin]]
+name = "matter-rs"
+path = "src/main.rs"
+
+[features]
+default = ["role-bridge", "adapter-mqtt"]
+# Roles: `role-<name>`. Each one pulls in its role crate and the role-specific parts of the
+# crates above it. `role-controller` is added with the controller crate.
+role-bridge = [
+    "dep:matter-rs-bridge",
+    "matter-rs-adapter-api/role-bridge",
+    "matter-rs-config/role-bridge",
+]
+# Adapters: `adapter-<name>`. Each one pulls in its adapter crate and its config section.
+adapter-mqtt = ["dep:matter-rs-adapter-mqtt", "matter-rs-config/adapter-mqtt"]
+# Optional parts by their name (`mgmt-api`, `ui`) and cluster groups (`clusters-<group>`) are
+# added with the crates and groups they select; the scheme is described in ARCHITECTURE.md.
+
+[dependencies]
+matter-rs-engine = { workspace = true, features = ["std"] }
+matter-rs-engine-rsmatter = { workspace = true }
+matter-rs-bridge = { workspace = true, features = ["std"], optional = true }
+matter-rs-adapter-api = { workspace = true, features = ["std"] }
+matter-rs-adapter-mqtt = { workspace = true, optional = true }
+matter-rs-config = { workspace = true }
+
+[dev-dependencies]
+toml = { workspace = true }
 
 [lints]
 workspace = true

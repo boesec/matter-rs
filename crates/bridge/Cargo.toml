@@ -1,0 +1,21 @@
+[package]
+name = "matter-rs-bridge"
+description = "Bridge role of matter-rs: aggregator, bridged devices, endpoint numbering, device types."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[features]
+default = ["std"]
+# Links the standard library. Without it the crate is `no_std` and relies on `alloc` only.
+std = ["matter-rs-engine/std", "thiserror/std"]
+
+[dependencies]
+matter-rs-engine = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,30 @@
+[package]
+name = "matter-rs-config"
+description = "Configuration of matter-rs: the TOML config model, its validation and schema."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[features]
+default = []
+# Configuration of the bridge role. Selected by the binary's `role-bridge` feature.
+role-bridge = [
+    "dep:matter-rs-bridge",
+    "matter-rs-adapter-api/role-bridge",
+    "matter-rs-adapter-mqtt?/role-bridge",
+]
+# Configuration of the MQTT adapter. Selected by the binary's `adapter-mqtt` feature.
+adapter-mqtt = ["dep:matter-rs-adapter-mqtt"]
+
+[dependencies]
+matter-rs-engine = { workspace = true, features = ["std"] }
+matter-rs-bridge = { workspace = true, features = ["std"], optional = true }
+matter-rs-adapter-api = { workspace = true, features = ["std"] }
+matter-rs-adapter-mqtt = { workspace = true, optional = true }
+thiserror = { workspace = true, features = ["std"] }
+
+[lints]
+workspace = true

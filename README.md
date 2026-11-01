@@ -27,6 +27,9 @@ profiles for small targets.
 Why Rust: low overhead, memory safety without a garbage collector, one static binary per target,
 and a `no_std` path to embedded devices.
 
+How the crates fit together, who may depend on whom and which conventions every crate follows is
+described in [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ### Planned releases
 
 | Release | Content |
@@ -52,11 +55,21 @@ first build. The minimum supported Rust version is 1.92.
 cargo build --workspace
 ```
 
+The engine facade, the adapter contract and the bridge role also build without the standard
+library. That `no_std` tier is checked against a bare-metal target, which rustup installs with the
+pinned toolchain:
+
+```sh
+cargo check -p matter-rs-engine -p matter-rs-adapter-api -p matter-rs-bridge \
+    --no-default-features --target thumbv7em-none-eabihf
+```
+
 ## Quality gate
 
-The same checks run locally and in CI: format check, clippy with warnings as errors, tests, and a
-dependency check with [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) (licences,
-advisories, duplicate crates, sources).
+The same checks run locally and in CI: format check, clippy with warnings as errors, tests, the
+`no_std` check above, a build of the binary with its default features and with only the bridge
+role, and a dependency check with [cargo-deny](https://github.com/EmbarkStudios/cargo-deny)
+(licences, advisories, duplicate crates, sources).
 
 ```sh
 cargo install --locked cargo-deny   # once
