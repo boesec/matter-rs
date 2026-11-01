@@ -53,6 +53,9 @@ function Start-Node([string[]] $extraArgs, [string] $name) {
     $err = Join-Path $WorkDir "$name.err.log"
     $arguments = @('--state-dir', $stateDir, '--port', "$Port") + $extraArgs
     if ($Interface -ne '') { $arguments += @('--interface', $Interface) }
+    # Start-Process joins the arguments with spaces; values with spaces (interface names,
+    # paths) must be quoted.
+    $arguments = $arguments | ForEach-Object { '"' + $_ + '"' }
     $process = Start-Process -FilePath $example -ArgumentList $arguments -PassThru -NoNewWindow `
         -RedirectStandardOutput $out -RedirectStandardError $err
     $deadline = (Get-Date).AddSeconds(60)
