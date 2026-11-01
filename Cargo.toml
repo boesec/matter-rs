@@ -9,6 +9,21 @@ rust-version = "1.92"
 license = "Apache-2.0"
 authors = ["matter-rs authors"]
 
+[workspace.dependencies]
+# Workspace crates, layered from the engine facade up to the binary. Which crate may depend on
+# which is written down in ARCHITECTURE.md and enforced by the tests of the `matter-rs` package.
+matter-rs-engine = { path = "crates/engine", default-features = false }
+matter-rs-engine-rsmatter = { path = "crates/engine-rsmatter" }
+matter-rs-bridge = { path = "crates/bridge", default-features = false }
+matter-rs-adapter-api = { path = "crates/adapter-api", default-features = false }
+matter-rs-adapter-mqtt = { path = "crates/adapter-mqtt" }
+matter-rs-config = { path = "crates/config" }
+
+# External crates. `thiserror` is used without default features so that the `no_std` crates can
+# derive their error types too; crates on the std tier enable its `std` feature themselves.
+thiserror = { version = "2.0", default-features = false }
+toml = "1.1"
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"

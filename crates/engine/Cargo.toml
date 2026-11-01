@@ -1,0 +1,20 @@
+[package]
+name = "matter-rs-engine"
+description = "Engine facade of matter-rs: the engine-neutral contract between the product and the Matter engine."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[features]
+default = ["std"]
+# Links the standard library. Without it the crate is `no_std` and relies on `alloc` only.
+std = ["thiserror/std"]
+
+[dependencies]
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
