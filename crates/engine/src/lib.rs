@@ -10,8 +10,16 @@
 //! contract serves Linux and Windows services and, later, microcontrollers. Its asynchronous
 //! parts are executor-neutral: they use `core::future` only and never name a runtime.
 //!
-//! What lives here today is the error type and the [`Secret`] wrapper. The ids, dynamic values,
-//! endpoint descriptions, events and the storage contract follow when the facade is designed.
+//! # What is here
+//!
+//! - **Ids** ([`EndpointId`], [`ClusterId`], [`AttributeId`], ...) and the dynamic [`Value`]
+//!   that maps one to one onto Matter TLV, with conversions from and to Rust types.
+//! - **Descriptions** of what the product puts on the node: [`DeviceType`],
+//!   [`ClusterDescription`], [`EndpointDescription`].
+//! - **Identity**: [`NodeIdentity`], [`NetworkConfig`], [`Attestation`], [`NodeRole`].
+//! - **Errors** ([`Error`]) and the [`Secret`] wrapper for passcodes, keys and pairing codes.
+//!
+//! The storage contract, the engine trait with its events and the fake engine follow.
 //!
 //! Unsafe code is forbidden in every crate of this workspace, twice over: by the workspace lint
 //! `unsafe_code = "forbid"` and by the `#![forbid(unsafe_code)]` attribute at the crate root.
@@ -33,8 +41,22 @@
 
 extern crate alloc;
 
+mod description;
 mod error;
+mod id;
+mod identity;
 mod secret;
+mod value;
 
+pub use description::{ClusterDescription, DeviceType, EndpointDescription};
 pub use error::Error;
-pub use secret::Secret;
+pub use id::{
+    AttributeId, ClusterId, CommandId, DeviceTypeId, EndpointId, EventId, FabricIndex, ProductId,
+    ROOT_ENDPOINT, VendorId,
+};
+pub use identity::{
+    Attestation, INVALID_PASSCODES, MATTER_PORT, MAX_DISCRIMINATOR, MAX_PASSCODE, NetworkConfig,
+    NodeIdentity, NodeRole, is_valid_passcode,
+};
+pub use secret::{REDACTED, Secret};
+pub use value::{Kind, Value, ValueError};
