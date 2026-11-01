@@ -1,0 +1,5 @@
+# Pinned tools of the interop harness. Python 3.11 or newer (tomllib).
+pytest==9.2.0
+pytest-timeout==2.4.0
+PyYAML==6.0.3
+ruff==0.17.3

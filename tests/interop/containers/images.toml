@@ -1,0 +1,23 @@
+# Pinned container images of the interop harness. The harness pulls every image by digest; the
+# tag is kept next to it so a human can read what the digest is.
+#
+# [chip] is the connectedhomeip certification image (chip-tool, the example apps and the Python
+# test framework). Its tags are connectedhomeip commits; the one pinned here is the tag the
+# official Matter 1.6.1 test harness uses. The image is published for linux/arm64 only, which is
+# why the workflow runs on an arm64 runner (see ../README.md).
+#
+# [node] is the base image of the matter.js container in matterjs/; its Dockerfile repeats the
+# same digest in its FROM line.
+
+[chip]
+name = "connectedhomeip/chip-cert-bins"
+tag = "e91ea83caae4adb1871aa4bbe93c4be2dd9e1abf"
+digest = "sha256:81a2b68f46e52e8352527a67c6487e0da57fdb166490e6af091d6e4f3974d9db"
+platform = "linux/arm64"
+commit = "e91ea83caae4adb1871aa4bbe93c4be2dd9e1abf"
+
+[node]
+name = "node"
+tag = "22-bookworm-slim"
+digest = "sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da"
+platform = "linux/arm64"
