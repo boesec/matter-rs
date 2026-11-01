@@ -2,3 +2,6 @@
 channel = "1.98.1"
 components = ["rustfmt", "clippy"]
 profile = "minimal"
+# The `no_std` tier (engine facade, adapter contract, bridge role) is checked against a bare-metal
+# Cortex-M target so that no std dependency slips in. `cargo check` needs no linker for it.
+targets = ["thumbv7em-none-eabihf"]
