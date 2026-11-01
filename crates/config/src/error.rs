@@ -1,5 +1,9 @@
 //! The error type of the configuration crate.
 
+use std::path::PathBuf;
+
+use crate::diagnostic::Report;
+
 /// Error of the configuration crate.
 ///
 /// Errors of the crates below are wrapped in variants rather than re-exported; the variants of
@@ -7,6 +11,20 @@
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
+    /// The configuration file cannot be read.
+    #[error("cannot read the configuration file `{}`", path.display())]
+    Read {
+        /// The file.
+        path: PathBuf,
+        /// Why it cannot be read.
+        source: std::io::Error,
+    },
+    /// The configuration file is invalid. The report holds every error and warning.
+    #[error("the configuration file is invalid ({} errors)", .0.errors().count())]
+    Invalid(Report),
+    /// The operating system cannot supply random numbers for a new passcode or discriminator.
+    #[error("the operating system cannot supply random numbers: {0}")]
+    Random(getrandom::Error),
     /// An error of the engine facade.
     #[error("engine error")]
     Engine(#[from] matter_rs_engine::Error),

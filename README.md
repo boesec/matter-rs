@@ -64,6 +64,33 @@ cargo check -p matter-rs-engine -p matter-rs-adapter-api -p matter-rs-bridge \
     --no-default-features --target thumbv7em-none-eabihf
 ```
 
+## Usage
+
+The service is configured by one TOML file. The binary `matter-rs` writes, checks and documents
+it; running the service follows later.
+
+```sh
+matter-rs init --output config.toml   # commented starter file with a fresh passcode and discriminator
+matter-rs validate config.toml        # every error and warning as <file>:<line>:<column>
+matter-rs features                    # roles and adapters compiled into this binary
+matter-rs schema                      # JSON schema of the file
+matter-rs schema --markdown           # configuration reference
+```
+
+Without an explicit path the file is taken from `--config <path>`, then from the environment
+variable `MATTER_RS_CONFIG`, then from the platform default (`/etc/matter-rs/config.toml` on
+Linux, `%ProgramData%\matter-rs\config.toml` on Windows). `init` refuses to overwrite an existing
+file unless `--force` is given. Exit codes: 0 success (warnings allowed), 1 an invalid or
+unreadable file or a failed command, 2 wrong usage.
+
+Secrets such as the setup passcode can be written into the file, or read from an environment
+variable (`passcode = { env = "MATTER_RS_PASSCODE" }`) or a file
+(`passcode = { file = "/etc/matter-rs/passcode" }`). Nothing ever prints them.
+
+Every section and key is described in the [configuration reference](doc/config.md); the
+[JSON schema](doc/config.schema.json) lets editors check the file while it is written. Both are
+generated from the code, and a test fails when they are out of date.
+
 ## Quality gate
 
 The same checks run locally and in CI: format check, clippy with warnings as errors, tests, the

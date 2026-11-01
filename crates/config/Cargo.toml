@@ -25,6 +25,11 @@ matter-rs-bridge = { workspace = true, features = ["std"], optional = true }
 matter-rs-adapter-api = { workspace = true, features = ["std"] }
 matter-rs-adapter-mqtt = { workspace = true, optional = true }
 thiserror = { workspace = true, features = ["std"] }
+toml = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+getrandom = { workspace = true }
 
 [lints]
 workspace = true

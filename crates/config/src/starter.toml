@@ -1,0 +1,48 @@
+# matter-rs configuration
+#
+# Written by `matter-rs init`. Check it with `matter-rs validate`; the full reference of every
+# section and key is printed by `matter-rs schema --markdown`.
+#
+# Configuration and state are kept apart: the service never writes to this file. What it learns
+# at run time (fabrics, keys, counters) lives in the state directory.
+
+[node]
+# Identity announced to controllers. The vendor id 0xFFF1 is the test vendor id of the Matter
+# specification; matter-rs is not certified and uses test attestation certificates.
+vendor_id = 0xFFF1
+product_id = 0x8001
+vendor_name = "matter-rs"
+product_name = "matter-rs bridge"
+node_label = "matter-rs"
+# serial_number = "0001"
+
+# Setup passcode and discriminator, freshly generated for this file. The passcode is a secret:
+# anybody who knows it can commission the node while it is open for commissioning. Instead of
+# writing it here it can be read from an environment variable or a file:
+#   passcode = { env = "MATTER_RS_PASSCODE" }
+#   passcode = { file = "/etc/matter-rs/passcode" }
+passcode = {{passcode}}
+discriminator = {{discriminator}}
+
+[network]
+# interface = "eth0"   # all interfaces when absent
+ipv4 = true
+ipv6 = true
+port = 5540
+
+[state]
+# Where fabrics, keys and counters are kept. When absent: /var/lib/matter-rs for root and
+# ~/.local/state/matter-rs otherwise on Linux; %ProgramData%\matter-rs when elevated and
+# %LOCALAPPDATA%\matter-rs otherwise on Windows.
+# dir = "/var/lib/matter-rs"
+
+[log]
+level = "info"      # error, warn, info, debug, trace
+format = "text"     # text, json
+journald = false    # Linux only
+
+{{bridge}}
+# Adapters feed devices into the bridge. One table per adapter instance; `kind` selects the
+# adapter and the other keys depend on it, for example:
+# [adapters.home]
+# kind = "mqtt"

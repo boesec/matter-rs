@@ -1,0 +1,287 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "node": {
+      "$ref": "#/$defs/NodeSection",
+      "description": "Identity and commissioning data of the Matter node."
+    },
+    "network": {
+      "$ref": "#/$defs/NetworkSection",
+      "description": "How the node is reached on the network.",
+      "default": {
+        "ipv4": true,
+        "ipv6": true,
+        "port": 5540
+      }
+    },
+    "state": {
+      "$ref": "#/$defs/StateSection",
+      "description": "Where the service keeps its state (fabrics, keys, counters).",
+      "default": {}
+    },
+    "log": {
+      "$ref": "#/$defs/LogSection",
+      "description": "Logging.",
+      "default": {
+        "level": "info",
+        "format": "text",
+        "journald": false
+      }
+    },
+    "bridge": {
+      "description": "The bridge role. The section's presence enables the role. It needs a build with the Cargo\nfeature `role-bridge`.",
+      "$ref": "#/$defs/BridgeSection"
+    },
+    "adapters": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/AdapterConfig"
+      },
+      "description": "Adapter instances, one table `[adapters.<id>]` per instance. `kind` selects the adapter;\nthe other keys depend on the kind. A kind needs a build with the Cargo feature\n`adapter-<kind>`."
+    }
+  },
+  "required": [
+    "node"
+  ],
+  "title": "matter-rs configuration",
+  "description": "The configuration file of matter-rs.\n\nOne TOML file configures the service. Configuration and state are kept apart: the service\nnever writes to this file, and everything it learns at run time lives in the state directory.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "NodeSection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "vendor_id": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Vendor id announced by the node. The default is the test vendor id `0xFFF1`.",
+          "default": 65521
+        },
+        "product_id": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Product id announced by the node.",
+          "default": 32769
+        },
+        "vendor_name": {
+          "type": "string",
+          "description": "Vendor name shown by controllers.",
+          "minLength": 1,
+          "maxLength": 32,
+          "default": "matter-rs"
+        },
+        "product_name": {
+          "type": "string",
+          "description": "Product name shown by controllers.",
+          "minLength": 1,
+          "maxLength": 32,
+          "default": "matter-rs bridge"
+        },
+        "node_label": {
+          "type": "string",
+          "description": "User-visible label of the node.",
+          "maxLength": 32,
+          "default": "matter-rs"
+        },
+        "serial_number": {
+          "type": "string",
+          "description": "Serial number announced by the node, if any.",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "passcode": {
+          "$ref": "#/$defs/SecretValue",
+          "description": "Setup passcode for commissioning: 1 to 99999998, without the trivial values the Matter\nspecification forbids. A secret: write it here, or read it with `{ env = \"NAME\" }` or\n`{ file = \"PATH\" }`."
+        },
+        "discriminator": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 4095,
+          "description": "Discriminator that commissioners use to find the node, 0 to 4095."
+        }
+      },
+      "required": [
+        "passcode",
+        "discriminator"
+      ],
+      "description": "Identity and commissioning data of the Matter node."
+    },
+    "SecretValue": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The secret written into the configuration file itself."
+        },
+        {
+          "$ref": "#/$defs/EnvSource",
+          "description": "The secret is read from an environment variable."
+        },
+        {
+          "$ref": "#/$defs/FileSource",
+          "description": "The secret is read from a file."
+        }
+      ],
+      "description": "A secret: the value itself, `{ env = \"NAME\" }` to read it from an environment variable, or `{ file = \"PATH\" }` to read it from a file (surrounding whitespace is ignored)."
+    },
+    "EnvSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "env": {
+          "type": "string",
+          "description": "Name of the environment variable that holds the secret."
+        }
+      },
+      "required": [
+        "env"
+      ],
+      "description": "Names the environment variable that holds a secret."
+    },
+    "FileSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Path of the file that holds the secret. A relative path is relative to the directory of\nthe configuration file."
+        }
+      },
+      "required": [
+        "file"
+      ],
+      "description": "Names the file that holds a secret."
+    },
+    "NetworkSection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "interface": {
+          "type": "string",
+          "description": "Network interface to use, by name. All interfaces when absent.",
+          "minLength": 1
+        },
+        "ipv4": {
+          "type": "boolean",
+          "description": "Use IPv4.",
+          "default": true
+        },
+        "ipv6": {
+          "type": "boolean",
+          "description": "Use IPv6.",
+          "default": true
+        },
+        "port": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "UDP port of the Matter protocol.",
+          "default": 5540
+        }
+      },
+      "description": "How the node is reached on the network."
+    },
+    "StateSection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dir": {
+          "type": "string",
+          "description": "State directory. A relative path is relative to the directory of the configuration file.\nWhen absent: `/var/lib/matter-rs` for root and `$XDG_STATE_HOME/matter-rs` (or\n`~/.local/state/matter-rs`) otherwise on Linux; `%ProgramData%\\matter-rs` when elevated and\n`%LOCALAPPDATA%\\matter-rs` otherwise on Windows."
+        }
+      },
+      "description": "Where the service keeps its state."
+    },
+    "LogSection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "level": {
+          "$ref": "#/$defs/LogLevel",
+          "description": "Lowest level that is logged.",
+          "default": "info"
+        },
+        "format": {
+          "$ref": "#/$defs/LogFormat",
+          "description": "Format of log lines.",
+          "default": "text"
+        },
+        "journald": {
+          "type": "boolean",
+          "description": "Log to the systemd journal. Linux only; ignored with a warning elsewhere.",
+          "default": false
+        }
+      },
+      "description": "Logging."
+    },
+    "LogLevel": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "error",
+          "description": "Errors only."
+        },
+        {
+          "type": "string",
+          "const": "warn",
+          "description": "Errors and warnings."
+        },
+        {
+          "type": "string",
+          "const": "info",
+          "description": "Normal operation."
+        },
+        {
+          "type": "string",
+          "const": "debug",
+          "description": "Details for troubleshooting."
+        },
+        {
+          "type": "string",
+          "const": "trace",
+          "description": "Everything."
+        }
+      ],
+      "description": "Lowest level that is logged."
+    },
+    "LogFormat": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "text",
+          "description": "Human-readable text."
+        },
+        {
+          "type": "string",
+          "const": "json",
+          "description": "One JSON object per line."
+        }
+      ],
+      "description": "Format of log lines."
+    },
+    "BridgeSection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Run the bridge role. Set to `false` to switch the role off without removing the section.",
+          "default": true
+        }
+      },
+      "description": "The bridge role."
+    },
+    "AdapterConfig": {
+      "not": {},
+      "description": "One adapter instance: `kind` selects the adapter, the other keys belong to it."
+    }
+  }
+}

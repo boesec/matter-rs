@@ -38,10 +38,10 @@ lower layers (section 3).
 | `matter-rs-controller` | `crates/controller` | 2 role | yes | Controller role: commission and control devices | planned (release 2) |
 | `matter-rs-adapter-api` | `crates/adapter-api` | 3 adapter contract | yes | Trait and types every adapter implements | skeleton; filled by the adapter model |
 | `matter-rs-adapter-mqtt` | `crates/adapter-mqtt` | 4 adapter | no | MQTT adapter along mqtt-smarthome | skeleton; filled by the MQTT adapter |
-| `matter-rs-config` | `crates/config` | 5 config | no | TOML config model, validation, schema | skeleton; filled by the config model |
+| `matter-rs-config` | `crates/config` | 5 config | no | TOML config model, validation, schema; generated reference in `doc/` | config model, validation, schema and reference in place; adapter and device sections follow with their crates |
 | `matter-rs-mgmt-api` | `crates/mgmt-api` | 6 optional | no | Local management API | planned |
 | `matter-rs-ui` | `crates/ui` | 6 optional | no | Web UI on top of the management API | planned |
-| `matter-rs` | `crates/matter-rs` | 7 service binary | no | Wires everything by features, runs as a service | skeleton; filled by the service |
+| `matter-rs` | `crates/matter-rs` | 7 service binary | no | Wires everything by features, runs as a service | command line for the configuration in place; the service itself follows |
 
 A skeleton crate compiles, documents its responsibility and layer at the crate root, forbids
 unsafe code, inherits the workspace lints, is `publish = false`, and exports its `Error` type
