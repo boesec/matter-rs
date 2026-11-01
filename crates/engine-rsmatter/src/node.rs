@@ -471,14 +471,13 @@ async fn handle_request<C, B, T, K, const NS: usize, const NE: usize>(
                 value: Value::Bool(reachable),
             };
             // The event check covers the cluster; the attribute check is the one
-            // `set_attribute` makes.
-            let result = table
-                .borrow()
-                .check_event(
-                    endpoint,
-                    bridged_device::CLUSTER,
-                    bridged_device::REACHABLE_CHANGED,
-                )
+            // `set_attribute` makes. The shared borrow ends before the mutable one starts.
+            let checked = table.borrow().check_event(
+                endpoint,
+                bridged_device::CLUSTER,
+                bridged_device::REACHABLE_CHANGED,
+            );
+            let result = checked
                 .and_then(|()| table.borrow_mut().set_values(std::slice::from_ref(&value)))
                 .and_then(|()| {
                     notify_values(im, std::slice::from_ref(&value));
