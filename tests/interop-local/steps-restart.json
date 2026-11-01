@@ -1,0 +1,28 @@
+[
+  {
+    "cmd": "attributes onoff read onoff 5000 2 --remote",
+    "expect": "Attribute value for onOff|ERROR|Error happened",
+    "assert": "onOff 5000/2/6/0: true",
+    "timeoutMs": 90000
+  },
+  {
+    "cmd": "attributes bridgeddevicebasicinformation read nodelabel 5000 2 --remote",
+    "expect": "Attribute value for nodeLabel|ERROR|Error happened",
+    "assert": "nodeLabel 5000/2/57/5: \"Kitchen\""
+  },
+  {
+    "cmd": "commands onoff toggle 5000 2",
+    "expect": "invoked|ERROR|Error happened",
+    "assert": "Command Toggle 5000/2/6/2 invoked"
+  },
+  {
+    "cmd": "attributes onoff read onoff 5000 2 --remote",
+    "expect": "Attribute value for onOff|ERROR|Error happened",
+    "assert": "onOff 5000/2/6/0: false"
+  },
+  {
+    "cmd": "attributes basicinformation read configurationversion 5000 0 --remote",
+    "expect": "Attribute value for configurationVersion|ERROR|Error happened",
+    "assert": "configurationVersion 5000/0/40/24: [0-9]+"
+  }
+]
