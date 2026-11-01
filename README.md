@@ -24,6 +24,15 @@ engine, behind a facade of its own. rs-matter is a protocol toolkit; matter-rs b
 on top of it: a dynamic bridge, the adapter model, configuration, service integration and build
 profiles for small targets.
 
+The engine is pinned to one git revision of rs-matter (0.4.1 plus the unreleased fixes up to that
+commit) in the workspace manifest; only the crate `matter-rs-engine-rsmatter` depends on it. That
+crate runs rs-matter on a dedicated thread, binds a dual-stack UDP socket so that IPv4 works on
+Windows too, announces the node with rs-matter's built-in mDNS responder, keeps rs-matter's state
+in the same directory as the product's, and turns commands and writes from Matter clients into
+events of the facade. Its rustdoc describes the upgrade procedure, what this revision can do for
+endpoints that come and go at run time, and the audit of its logs for secrets. A scripted
+scenario against the matter.js shell lives in [`tests/interop-local/`](tests/interop-local/).
+
 Why Rust: low overhead, memory safety without a garbage collector, one static binary per target,
 and a `no_std` path to embedded devices.
 
@@ -75,7 +84,11 @@ matter-rs validate config.toml        # every error and warning as <file>:<line>
 matter-rs features                    # roles and adapters compiled into this binary
 matter-rs schema                      # JSON schema of the file
 matter-rs schema --markdown           # configuration reference
+matter-rs pairing-info config.toml    # manual pairing code, QR code text and discriminator
 ```
+
+`pairing-info` is the one place the pairing code is shown: it encodes the setup passcode, so
+neither `validate` nor the logs ever print it.
 
 Without an explicit path the file is taken from `--config <path>`, then from the environment
 variable `MATTER_RS_CONFIG`, then from the platform default (`/etc/matter-rs/config.toml` on
