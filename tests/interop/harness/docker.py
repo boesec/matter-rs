@@ -50,17 +50,20 @@ def run_command(
     env: dict[str, str] | None = None,
     workdir: str | None = None,
     entrypoint: str | None = None,
+    security_opts: tuple[str, ...] = (),
 ) -> tuple[str, ...]:
     """Build a ``docker run --rm`` command line.
 
     ``mounts`` are ``(source, target, read_only)`` triples; a source that is not an absolute path
-    is a named volume.
+    is a named volume. ``security_opts`` are passed as ``--security-opt`` values.
     """
     command: list[str] = ["docker", "run", "--rm", "--name", name]
     if host_network:
         command += ["--network", "host"]
     if interactive:
         command.append("-i")
+    for option in security_opts:
+        command += ["--security-opt", option]
     for source, target, read_only in mounts:
         spec = f"{source}:{target}"
         if read_only:
@@ -75,6 +78,14 @@ def run_command(
     command.append(image)
     command.extend(args)
     return tuple(command)
+
+
+# Containers that talk to the host's Avahi daemon over the mounted D-Bus socket. Docker's default
+# AppArmor profile has no D-Bus rules, and an AppArmor-aware dbus-daemon refuses a confined
+# client's connection outright, which chip-tool reports as "Open file failed" from its mDNS
+# initialisation. Lifting the profile for these containers lets the connection through; they
+# still run without extra capabilities.
+DBUS_CLIENT_SECURITY_OPTS: tuple[str, ...] = ("apparmor=unconfined",)
 
 
 def remove_container(name: str) -> None:

@@ -16,7 +16,7 @@ from pathlib import Path
 import yaml
 
 from harness.config import HarnessConfig
-from harness.docker import host_path, run_command
+from harness.docker import DBUS_CLIENT_SECURITY_OPTS, host_path, run_command
 from harness.process import HarnessError, ManagedProcess
 from harness.redact import Redactor
 
@@ -154,6 +154,7 @@ class PythonTestRunner:
                 (host_path(pics_file.parent), "/pics", True),
             ),
             workdir=SCRIPTS_DIR,
+            security_opts=DBUS_CLIENT_SECURITY_OPTS,
         )
         process = ManagedProcess(
             f"python-tc {script}",
