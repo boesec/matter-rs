@@ -91,6 +91,22 @@ class ChipTool:
         the redactor before the line reaches any log.
         """
         capture = self._redactor.capture(MANUAL_CODE_LINE)
+        # A window left open by an earlier step (for example a second administrator that never
+        # commissioned) would make the device answer Busy. Revoking first costs one timed
+        # command and fails harmlessly with WindowNotOpen when there is nothing to revoke.
+        self.run(
+            "revoke-window",
+            (
+                "administratorcommissioning",
+                "revoke-commissioning",
+                str(node_id),
+                "0",
+                "--timedInteractionTimeoutMs",
+                "1000",
+            ),
+            timeout,
+            expect_success=False,
+        )
         process = self.run(
             "open-window",
             (
