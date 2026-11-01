@@ -95,14 +95,29 @@ it natively. The runner image has Docker, Python 3.12 and passwordless `sudo`.
 4. The matter.js shell and device use matter.js's own mDNS stack (no Avahi); they bind UDP 5353
    next to Avahi with address reuse.
 
-**Verified on the runner:** see the "Runner network" section of a run's step summary and the
-networking log groups of a run; the result of the verification is recorded below once the
-workflow has run.
+**Verified on the runner** (`ubuntu-24.04-arm`, first green run on 2026-11-01): the whole job
+takes about two minutes, of which the scenarios themselves take about 40 seconds (image pull
+about 40 seconds, matter.js image build about 15 seconds). What had to be true for the four
+scenarios to pass, each found by a red run before it:
+
+- IPv6 enabled in the kernel plus a unique-local address on the default interface, and
+  `avahi-daemon` with `use-ipv6=yes`: the certification image's chip-tool and Python controller
+  are IPv6-only and resolve the device through Avahi.
+- The containers that talk to Avahi run with `--security-opt apparmor=unconfined`. Under Docker's
+  default profile the host's D-Bus answers "Access denied" and chip-tool fails before any
+  networking with "Open file failed" from its mDNS initialisation; the workflow's probe step
+  shows both variants.
+- The Python framework gets `--paa-trust-store-path /paa` with the test roots from `paa/`;
+  its default store next to its scripts is empty in the image, and attestation fails.
+- Each enhanced commissioning window is revoked before a new one is opened, so one scenario's
+  leftover window cannot make the next answer Busy.
+- The matter.js shell is started by its ESM entry point; the package's bin link points to a
+  CommonJS build the published tarball does not contain.
 
 **Triggers:** pull requests, pushes to every branch, a nightly schedule (03:17 UTC) and manual
-dispatch. One job runs all scenarios; the measured duration is recorded below. If a full run ever
-exceeds 20 minutes, the pull-request trigger keeps only the chip-tool scenario and the rest moves
-to the schedule.
+dispatch. One job runs all scenarios in about two minutes, far below the 20-minute limit at
+which the pull-request trigger would keep only the chip-tool scenario and move the rest to the
+schedule.
 
 **Diagnosing a run:** the step "Run the interop scenarios" shows the pytest output (live log
 lines of the harness are redacted like the files). The step "Print the last lines of every
