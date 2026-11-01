@@ -60,7 +60,8 @@ library. That `no_std` tier is checked against a bare-metal target, which rustup
 pinned toolchain:
 
 ```sh
-cargo check -p matter-rs-engine -p matter-rs-adapter-api -p matter-rs-bridge     --no-default-features --target thumbv7em-none-eabihf
+cargo check -p matter-rs-engine -p matter-rs-adapter-api -p matter-rs-bridge \
+    --no-default-features --target thumbv7em-none-eabihf
 ```
 
 ## Quality gate
