@@ -211,7 +211,15 @@ the workflow adds `logs/pytest.log`. All of it passes through one redactor:
   DUT is commissionable.
 - *the shell hangs after `commission pair`:* the shell downloads the Distributed Compliance
   Ledger's certificates on first use; the run needs outbound internet access. The matter.js device
-  uses the Matter test PAA, which both chip-tool and the Python controller trust from their
-  built-in test store; the shell reports it as a "PaaNotTrusted" finding and continues.
+  uses the Matter test PAA: chip-tool trusts it from its built-in test store, the Python
+  framework from the roots in `paa/` (mounted as `/paa`, see `paa/README.md`), and the shell
+  reports it as a "PaaNotTrusted" finding and continues.
+- *the Python framework fails with "Failed Device Attestation":* its trust store is not set or
+  empty; the harness passes `--paa-trust-store-path /paa`. A device with another test chain needs
+  its root added to `paa/`.
+- *chip-tool or the framework fail at start with "Open file failed" from the mDNS code:* the
+  container could not connect to the host's D-Bus (Avahi answers "Access denied" under Docker's
+  default AppArmor profile). The harness starts those containers with `apparmor=unconfined`; the
+  workflow's probe step shows both variants.
 - *`docker rm` or `volume rm` errors at teardown:* harmless, the names are per run; stale ones
   are listed by `docker ps -a --filter name=interop-` and `docker volume ls --filter name=interop-`.

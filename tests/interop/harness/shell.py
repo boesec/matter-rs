@@ -41,9 +41,10 @@ class MatterShell:
         name = self._config.container_name("shell")
         command = run_command(
             self._config.matterjs_image,
-            # The shell's entry point is called directly: the lockfile carries no `bin` entry for
-            # the package, so `npm ci` creates no `node_modules/.bin/matter-shell` link.
-            ("node", "node_modules/@matter/nodejs-shell/dist/cjs/app.js", str(self._node_num)),
+            # The shell's entry point is called directly: the package's `bin` points to a
+            # `dist/cjs/app.js` that the published tarball does not contain (it ships the ESM
+            # build only), so neither the bin link nor that path works.
+            ("node", "node_modules/@matter/nodejs-shell/dist/esm/app.js", str(self._node_num)),
             name=name,
             interactive=True,
             mounts=((self.volume, "/state", False),),
