@@ -31,6 +31,10 @@ CI. The CI interop harness lives in `tests/interop/`.
   on the first start; answer with allow, or create an inbound rule beforehand.
 - An interface with an IPv4 address. The engine picks one itself; name it explicitly when the
   host has several (for example a virtual adapter of WSL or a VM).
+- No other node of this project announcing on the host while the scenario runs: the contract
+  tests of the engine crate (`cargo test`) start nodes with the same test discriminator on
+  ephemeral ports, and the shell may pick one of them up during discovery. Run the scenario and
+  the test suite one after the other, not at the same time.
 
 ## Running
 
