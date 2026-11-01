@@ -78,7 +78,8 @@ function Invoke-Steps([string] $steps, [string] $pairingCode) {
     $env:SHELL_STORAGE = $shellStorage
     $env:SHELL_LOG = $shellLog
     $env:PAIRING_CODE = $pairingCode
-    & node (Join-Path $here 'drive-shell.mjs') (Join-Path $here $steps)
+    # The driver's output goes to the host, so that the function returns the exit code only.
+    & node (Join-Path $here 'drive-shell.mjs') (Join-Path $here $steps) | ForEach-Object { Write-Host $_ }
     return $LASTEXITCODE
 }
 
