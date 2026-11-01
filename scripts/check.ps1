@@ -28,7 +28,7 @@ if ($null -ne $cargo) {
 $steps = @(
     @{ Name = 'fmt';           Args = @('fmt', '--all', '--check') },
     @{ Name = 'clippy';        Args = @('clippy', '--workspace', '--all-targets', '--all-features', '--', '-D', 'warnings') },
-    @{ Name = 'test';          Args = @('test', '--workspace') },
+    @{ Name = 'test';          Args = @('test', '--workspace', '--all-features') },
     # The no_std tier must build without the standard library; the target comes from
     # rust-toolchain.toml and needs no linker for `cargo check`.
     @{ Name = 'no_std';        Args = @('check', '-p', 'matter-rs-engine', '-p', 'matter-rs-adapter-api', '-p', 'matter-rs-bridge', '--no-default-features', '--target', 'thumbv7em-none-eabihf') },

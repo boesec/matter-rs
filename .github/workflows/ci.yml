@@ -54,7 +54,7 @@ jobs:
       - name: Install toolchain
         run: rustup toolchain install
       - name: cargo test
-        run: cargo test --workspace
+        run: cargo test --workspace --all-features
 
   no-std:
     name: no_std tier
