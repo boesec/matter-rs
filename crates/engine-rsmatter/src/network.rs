@@ -190,6 +190,17 @@ pub(crate) fn bind_mdns_socket(
     socket.set_only_v6(!config.ipv4)?;
     socket
         .bind(&SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, MDNS_PORT, 0, 0)).into())?;
+    // Outgoing multicast leaves through the chosen interface, not through whatever interface
+    // the routing table prefers for the multicast range (on a multi-homed host often a virtual
+    // adapter), and is looped back to listeners on this host.
+    if let Some(ipv4) = interface.ipv4 {
+        socket.set_multicast_if_v4(&ipv4)?;
+        socket.set_multicast_loop_v4(true)?;
+    }
+    if !interface.ipv6.is_empty() {
+        socket.set_multicast_if_v6(interface.index)?;
+        socket.set_multicast_loop_v6(true)?;
+    }
     let socket: UdpSocket = socket.into();
 
     if let Some(ipv4) = interface.ipv4

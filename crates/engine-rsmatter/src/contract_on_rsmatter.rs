@@ -521,7 +521,8 @@ fn node_announces_on_mdns() {
     };
 
     // A listener on the mDNS port, joined to the group on the node's interface, sees the
-    // node's announcements and its multicast answers.
+    // node's announcements and its multicast answers. Its multicast interface is set
+    // explicitly, as the engine does, so that a multi-homed host loops the packets back.
     let listener = socket2::Socket::new(
         socket2::Domain::IPV4,
         socket2::Type::DGRAM,
@@ -534,6 +535,8 @@ fn node_announces_on_mdns() {
     listener
         .bind(&SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MDNS_PORT)).into())
         .unwrap();
+    listener.set_multicast_if_v4(&ipv4).unwrap();
+    listener.set_multicast_loop_v4(true).unwrap();
     let listener: UdpSocket = listener.into();
     listener
         .join_multicast_v4(&MDNS_IPV4_BROADCAST_ADDR, &ipv4)
