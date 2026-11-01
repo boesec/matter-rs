@@ -10,11 +10,24 @@ publish = false
 
 [features]
 default = ["std"]
-# Links the standard library. Without it the crate is `no_std` and relies on `alloc` only.
+# Links the standard library. Without it the crate is `no_std` and relies on `alloc` only. The
+# feature also enables the storage back-ends that need files or locks (`DirectoryStorage`,
+# `MemoryStorage`).
 std = ["thiserror/std"]
+# The in-memory fake engine and the `block_on` helper that product crates test against. It
+# implies `std`: the fake engine is `Send + Sync` and needs a lock, which the facade has no
+# runtime-free, standard-library-free source for.
+testing = ["std"]
 
 [dependencies]
 thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[[test]]
+name = "fake_engine"
+required-features = ["testing"]
 
 [lints]
 workspace = true

@@ -32,7 +32,7 @@ lower layers (section 3).
 
 | Package | Directory | Layer | `no_std` | Responsibility | Status |
 |---|---|---|---|---|---|
-| `matter-rs-engine` | `crates/engine` | 0 engine facade | yes | Engine-neutral contract: ids, dynamic values, endpoint descriptions, events, storage contract, errors, `Secret<T>` | skeleton; filled by the facade design |
+| `matter-rs-engine` | `crates/engine` | 0 engine facade | yes | Engine-neutral contract: ids, dynamic values, endpoint descriptions, events, storage contract, errors, `Secret<T>`; fake engine behind the `testing` feature | contract in place; the controller extension follows |
 | `matter-rs-engine-rsmatter` | `crates/engine-rsmatter` | 1 engine implementation | no | The only crate that depends on rs-matter; runs it on a dedicated thread | skeleton; filled when rs-matter is pinned |
 | `matter-rs-bridge` | `crates/bridge` | 2 role | yes | Aggregator, bridged devices, endpoint numbering, device types | skeleton; filled by the bridge role |
 | `matter-rs-controller` | `crates/controller` | 2 role | yes | Controller role: commission and control devices | planned (release 2) |

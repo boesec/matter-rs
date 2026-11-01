@@ -36,7 +36,7 @@ run() {
 
 run fmt fmt --all --check
 run clippy clippy --workspace --all-targets --all-features -- -D warnings
-run test test --workspace
+run test test --workspace --all-features
 # The no_std tier must build without the standard library; the target comes from
 # rust-toolchain.toml and needs no linker for `cargo check`.
 run no_std check -p matter-rs-engine -p matter-rs-adapter-api -p matter-rs-bridge \
