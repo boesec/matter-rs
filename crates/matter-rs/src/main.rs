@@ -6,8 +6,8 @@
 //! error; the library crates each have their own error type.
 //!
 //! Today the command line covers the configuration: writing a starter file, validating a file,
-//! printing its schema and reference, and listing the compiled-in features. Running the service
-//! follows in a later step.
+//! printing its schema and reference, printing the pairing information of the configured node,
+//! and listing the compiled-in features. Running the service follows in a later step.
 //!
 //! Exit codes: 0 on success (a valid file, warnings allowed), 1 when the command failed (an
 //! invalid or unreadable file, a file that already exists), 2 on wrong usage.
@@ -26,6 +26,8 @@ use matter_rs_config::{
     CONFIG_ENV, Error, Loaded, SystemEnvironment, json_schema, load, new_starter_config,
     reference_markdown, resolve_config_path,
 };
+use matter_rs_engine::{NodeIdentity, ProductId, VendorId};
+use matter_rs_engine_rsmatter::pairing_info_for;
 
 /// Exit code of a command that failed.
 const EXIT_FAILURE: u8 = 1;
@@ -66,6 +68,14 @@ enum Command {
         #[arg(value_name = "PATH")]
         path: Option<PathBuf>,
     },
+    /// Print the pairing information of the node in a configuration file: the manual pairing
+    /// code, the QR code text and the discriminator. The codes encode the setup passcode and
+    /// are shown here and nowhere else.
+    PairingInfo {
+        /// The file to read. Without it, the configuration file path is used.
+        #[arg(value_name = "PATH")]
+        path: Option<PathBuf>,
+    },
     /// List the features compiled into this binary, one per line.
     Features,
     /// Print the JSON schema of the configuration file.
@@ -90,6 +100,17 @@ fn main() -> ExitCode {
                     .exit();
             }
             validate(path.or(cli.config))
+        }
+        Command::PairingInfo { path } => {
+            if path.is_some() && cli.config.is_some() {
+                Cli::command()
+                    .error(
+                        ErrorKind::ArgumentConflict,
+                        "give the file either as PATH or with --config, not both",
+                    )
+                    .exit();
+            }
+            pairing_info(path.or(cli.config))
         }
         Command::Features => {
             for feature in enabled_features() {
@@ -202,6 +223,50 @@ fn validate(given: Option<PathBuf>) -> ExitCode {
                 plural(warnings, "warning", "warnings")
             );
             ExitCode::from(EXIT_FAILURE)
+        }
+        Err(error) => fail(&error_chain(&error)),
+    }
+}
+
+/// Prints the pairing information of the configured node. This is the one place the pairing
+/// code and the QR text are shown; `validate` and the logs never print them.
+fn pairing_info(given: Option<PathBuf>) -> ExitCode {
+    let path = match config_path(given) {
+        Ok(path) => path,
+        Err(message) => return fail(&message),
+    };
+    let loaded = match load(&path, &SystemEnvironment) {
+        Ok(loaded) => loaded,
+        Err(Error::Invalid(report)) => {
+            eprint!("{report}");
+            return fail(&format!("{} is not valid", path.display()));
+        }
+        Err(error) => return fail(&error_chain(&error)),
+    };
+    let node = &loaded.config.node;
+    // Only the vendor and product ids, the serial number, the passcode and the discriminator
+    // enter the codes; the remaining fields of the identity do not and are filled from the
+    // binary.
+    let identity = NodeIdentity {
+        vendor_id: VendorId::new(node.vendor_id),
+        product_id: ProductId::new(node.product_id),
+        vendor_name: node.vendor_name.clone(),
+        product_name: node.product_name.clone(),
+        node_label: node.node_label.clone(),
+        serial_number: node.serial_number.clone(),
+        software_version: 0,
+        software_version_string: String::from(env!("CARGO_PKG_VERSION")),
+        unique_id: String::new(),
+        passcode: node.passcode.clone(),
+        discriminator: node.discriminator,
+    };
+    match pairing_info_for(&identity) {
+        Ok(info) => {
+            println!("configuration: {}", path.display());
+            println!("discriminator: {}", info.discriminator);
+            println!("manual pairing code: {}", info.manual_code.expose());
+            println!("qr code text: {}", info.qr_text.expose());
+            ExitCode::SUCCESS
         }
         Err(error) => fail(&error_chain(&error)),
     }
