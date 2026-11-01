@@ -1,0 +1,59 @@
+# PICS of the matter.js on/off light in containers/matterjs/device.mjs, in the key=value form the
+# connectedhomeip Python test framework reads. Hand-written: only what the device implements.
+
+# Descriptor
+DESC.S=1
+DESC.S.A0000=1
+DESC.S.A0001=1
+DESC.S.A0002=1
+DESC.S.A0003=1
+
+# Basic Information (root endpoint)
+BINFO.S=1
+BINFO.S.A0000=1
+BINFO.S.A0001=1
+BINFO.S.A0002=1
+BINFO.S.A0003=1
+BINFO.S.A0004=1
+BINFO.S.A0005=1
+BINFO.S.A0006=1
+BINFO.S.A0007=1
+BINFO.S.A0008=1
+BINFO.S.A0009=1
+BINFO.S.A000a=1
+BINFO.S.A0012=1
+BINFO.S.A0013=1
+BINFO.S.A0015=1
+BINFO.S.A0016=1
+
+# General Commissioning
+CGEN.S=1
+CGEN.S.A0000=1
+CGEN.S.A0001=1
+CGEN.S.A0002=1
+CGEN.S.A0003=1
+CGEN.S.A0004=1
+CGEN.S.C00.Rsp=1
+CGEN.S.C02.Rsp=1
+CGEN.S.C04.Rsp=1
+
+# Administrator Commissioning (enhanced windows only)
+CADMIN.S=1
+CADMIN.S.A0000=1
+CADMIN.S.A0001=1
+CADMIN.S.A0002=1
+CADMIN.S.C00.Rsp=1
+CADMIN.S.C02.Rsp=1
+
+# On/Off on the light endpoint
+OO.S=1
+OO.S.A0000=1
+OO.S.C00.Rsp=1
+OO.S.C01.Rsp=1
+OO.S.C02.Rsp=1
+
+# Identify on the light endpoint
+I.S=1
+I.S.A0000=1
+I.S.A0001=1
+I.S.C00.Rsp=1

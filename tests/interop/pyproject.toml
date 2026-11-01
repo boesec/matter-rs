@@ -1,0 +1,22 @@
+# Tooling configuration of the interop harness (not a Python package to install).
+
+[tool.pytest.ini_options]
+testpaths = ["selftest", "scenarios"]
+addopts = "-ra --strict-markers"
+markers = [
+    "docker: needs a Docker daemon and the pinned images (skipped without, failed with INTEROP_REQUIRE_DOCKER=1)",
+]
+# pytest-timeout: every test has a limit; the scenarios set tighter ones.
+timeout = 900
+log_cli = true
+log_cli_level = "INFO"
+log_cli_format = "%(asctime)s %(levelname)s %(message)s"
+log_cli_date_format = "%H:%M:%S"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "PTH"]
+ignore = ["RUF012"]
