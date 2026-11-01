@@ -21,6 +21,9 @@ from harness.process import HarnessError, ManagedProcess
 from harness.redact import Redactor
 
 SCRIPTS_DIR = "/root/python_testing/scripts/sdk"
+
+# The Matter test PAA roots the framework trusts (see paa/README.md), mounted as /paa.
+PAA_DIR = Path(__file__).resolve().parent.parent / "paa"
 SUMMARY_FILE = "test_summary.yaml"
 
 
@@ -140,6 +143,10 @@ class PythonTestRunner:
             "/state/admin_storage.json",
             "--logs-path",
             "/logs",
+            # Without an explicit trust store the framework looks next to its own scripts, finds
+            # no root and fails device attestation; the test roots live in the harness.
+            "--paa-trust-store-path",
+            "/paa",
             *extra_args,
         )
         name = self._config.container_name("python-tc")
@@ -152,6 +159,7 @@ class PythonTestRunner:
                 (self.volume, "/state", False),
                 (host_path(host_logs), "/logs", False),
                 (host_path(pics_file.parent), "/pics", True),
+                (host_path(PAA_DIR), "/paa", True),
             ),
             workdir=SCRIPTS_DIR,
             security_opts=DBUS_CLIENT_SECURITY_OPTS,
