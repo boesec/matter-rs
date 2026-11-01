@@ -1,0 +1,59 @@
+[
+  {
+    "cmd": "commission pair 5000 --pairing-code ${PAIRING_CODE}",
+    "expect": "Commissioned Node: 5000|ERROR|Error happened",
+    "assert": "Commissioned Node: 5000",
+    "timeoutMs": 180000
+  },
+  {
+    "cmd": "attributes descriptor read partslist 5000 1 --remote",
+    "expect": "Attribute value for partsList|ERROR|Error happened",
+    "assert": "partsList 5000/1/29/3: \\[2\\]"
+  },
+  {
+    "cmd": "attributes onoff read onoff 5000 2 --remote",
+    "expect": "Attribute value for onOff|ERROR|Error happened",
+    "assert": "onOff 5000/2/6/0: false"
+  },
+  {
+    "cmd": "commands onoff toggle 5000 2",
+    "expect": "invoked|ERROR|Error happened",
+    "assert": "Command Toggle 5000/2/6/2 invoked"
+  },
+  {
+    "cmd": "attributes onoff read onoff 5000 2 --remote",
+    "expect": "Attribute value for onOff|ERROR|Error happened",
+    "assert": "onOff 5000/2/6/0: true"
+  },
+  {
+    "cmd": "attributes bridgeddevicebasicinformation read nodelabel 5000 2 --remote",
+    "expect": "Attribute value for nodeLabel|ERROR|Error happened",
+    "assert": "nodeLabel 5000/2/57/5: \"Light\""
+  },
+  {
+    "cmd": "attributes bridgeddevicebasicinformation write nodelabel Kitchen 5000 2",
+    "expect": "set to|ERROR|Error happened",
+    "assert": "Attribute nodeLabel 5000/2/57/5 set to"
+  },
+  {
+    "cmd": "attributes bridgeddevicebasicinformation read nodelabel 5000 2 --remote",
+    "expect": "Attribute value for nodeLabel|ERROR|Error happened",
+    "assert": "nodeLabel 5000/2/57/5: \"Kitchen\""
+  },
+  {
+    "cmd": "attributes bridgeddevicebasicinformation write nodelabel ThisLabelIsTooLongForTheLight 5000 2",
+    "expect": "set to|ERROR|Error happened",
+    "assert": "ERROR: Could not set attribute NodeLabel",
+    "reject": "set to"
+  },
+  {
+    "cmd": "attributes bridgeddevicebasicinformation read nodelabel 5000 2 --remote",
+    "expect": "Attribute value for nodeLabel|ERROR|Error happened",
+    "assert": "nodeLabel 5000/2/57/5: \"Kitchen\""
+  },
+  {
+    "cmd": "attributes bridgeddevicebasicinformation read reachable 5000 2 --remote",
+    "expect": "Attribute value for reachable|ERROR|Error happened",
+    "assert": "reachable 5000/2/57/17: true"
+  }
+]
