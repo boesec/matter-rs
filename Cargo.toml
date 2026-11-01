@@ -1,6 +1,9 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# The fuzz crate of the config parser is built by `cargo fuzz` on its own (nightly, Linux) and is
+# not part of the normal build.
+exclude = ["crates/config/fuzz"]
 
 [workspace.package]
 version = "0.0.0"
@@ -23,6 +26,12 @@ matter-rs-config = { path = "crates/config" }
 # derive their error types too; crates on the std tier enable its `std` feature themselves.
 thiserror = { version = "2.0", default-features = false }
 toml = "1.1"
+# Configuration model and command line.
+clap = { version = "4.6", features = ["derive"] }
+getrandom = "0.4"
+schemars = { version = "1.2", features = ["preserve_order"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
