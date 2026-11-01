@@ -47,4 +47,5 @@ highlight = "all"
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+# The Matter engine is pinned to a git revision of rs-matter (see the workspace manifest).
+allow-git = ["https://github.com/project-chip/rs-matter"]
