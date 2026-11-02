@@ -49,7 +49,7 @@ rs-matter-macros = { git = "https://github.com/project-chip/rs-matter", rev = "1
 embassy-time = { version = "0.5", features = ["std"] }
 embassy-time-queue-utils = { version = "0.3", features = ["generic-queue-64"] }
 async-io = "2"
-socket2 = "0.6"
+socket2 = { version = "0.6", features = ["all"] }
 if-addrs = "0.15"
 rand = { version = "0.10", features = ["std", "std_rng", "thread_rng"] }
 log = "0.4"
