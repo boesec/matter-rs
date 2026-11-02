@@ -14,9 +14,10 @@ default = ["std"]
 # feature also enables the storage back-ends that need files or locks (`DirectoryStorage`,
 # `MemoryStorage`).
 std = ["thiserror/std"]
-# The in-memory fake engine and the `block_on` helper that product crates test against. It
-# implies `std`: the fake engine is `Send + Sync` and needs a lock, which the facade has no
-# runtime-free, standard-library-free source for.
+# The in-memory fake engine and the `block_on` helper that product crates test against, and
+# the contract suite every engine implementation runs. It implies `std`: the fake engine is
+# `Send + Sync` and needs a lock, which the facade has no runtime-free, standard-library-free
+# source for.
 testing = ["std"]
 
 [dependencies]
@@ -27,6 +28,10 @@ proptest = { workspace = true }
 
 [[test]]
 name = "fake_engine"
+required-features = ["testing"]
+
+[[test]]
+name = "contract_fake"
 required-features = ["testing"]
 
 [lints]
