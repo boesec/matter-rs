@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 
@@ -78,3 +79,43 @@ def test_require_docker_flag() -> None:
     assert HarnessConfig.from_env({}).require_docker is False
     assert HarnessConfig.from_env({"INTEROP_REQUIRE_DOCKER": "0"}).require_docker is False
     assert HarnessConfig.from_env({"INTEROP_REQUIRE_DOCKER": "1"}).require_docker is True
+
+
+def test_engine_dut_runs_natively_on_its_own_port_and_discriminator(tmp_path: Path) -> None:
+    config = HarnessConfig.from_env(
+        {
+            "INTEROP_ENGINE_DUT": str(tmp_path / "onoff_node"),
+            "INTEROP_ENGINE_INTERFACE": "eth0",
+            "INTEROP_PASSCODE": "12345678",
+        }
+    )
+    dut = config.engine_dut(tmp_path / "state")
+    assert dut.name == "engine-onoff-node"
+    assert dut.command[0] == str((tmp_path / "onoff_node").resolve())
+    assert dut.command[1:] == (
+        "--state-dir",
+        str(tmp_path / "state"),
+        "--port",
+        "5541",
+        "--discriminator",
+        "3841",
+        "--passcode",
+        "12345678",
+        "--interface",
+        "eth0",
+    )
+    assert dut.ready_pattern == "onoff_node: ready"
+    assert dut.endpoint == 2
+    assert dut.stdin is True
+    assert dut.container_name is None
+    assert config.engine_port != config.dut_port
+    assert config.engine_discriminator != config.discriminator
+
+
+def test_engine_dut_needs_the_binary() -> None:
+    config = HarnessConfig.from_env({})
+    assert config.engine_dut_binary is None
+    with pytest.raises(ValueError, match="INTEROP_ENGINE_DUT"):
+        config.engine_dut(Path("state"))
+    custom = HarnessConfig.from_env({"INTEROP_ENGINE_DUT_PORT": "6000", "INTEROP_ENGINE_DISCRIMINATOR": "0x123"})
+    assert (custom.engine_port, custom.engine_discriminator) == (6000, 0x123)

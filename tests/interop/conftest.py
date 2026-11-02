@@ -3,6 +3,12 @@
 Session fixtures start the device under test once and let chip-tool commission it; the scenarios
 then act as further administrators on the same device. Everything the harness writes goes
 through one redactor, so no passcode or pairing code reaches ``logs/``.
+
+Two devices under test exist side by side: the matter.js light (``dut``, ``chiptool``,
+``commissioned_dut``) and the engine example of this repository (``engine_dut``,
+``engine_chiptool``, ``engine_commissioned_dut``), each on its own port and discriminator and
+each with its own chip-tool fabric. The engine fixtures skip when ``INTEROP_ENGINE_DUT`` does not
+name the built example.
 """
 
 from __future__ import annotations
@@ -11,6 +17,7 @@ import logging
 import re
 import shutil
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,11 +28,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from harness.chiptool import ChipTool
 from harness.config import DutSpec, HarnessConfig
 from harness.docker import docker_available, image_present, remove_volume
+from harness.enginedut import EngineDut
 from harness.pairing import manual_pairing_code
 from harness.process import HarnessError, ManagedProcess
 from harness.redact import Redactor
 
 CHIPTOOL_NODE_ID = 1
+ENGINE_CHIPTOOL_NODE_ID = 11
 LAST_TEST = "test_logs_contain_no_passcode"
 
 
@@ -66,6 +75,18 @@ class CommissionedDut:
         return self.dut.spec.endpoint
 
 
+@dataclass
+class CommissionedEngineDut:
+    """The engine DUT on its chip-tool's fabric, with the driver for its line protocol."""
+
+    dut: EngineDut
+    node_id: int
+
+    @property
+    def endpoint(self) -> int:
+        return self.dut.endpoint
+
+
 def start_dut(spec: DutSpec, logs_dir: Path, redactor: Redactor, logger: logging.Logger) -> ManagedProcess:
     """Start the device under test and wait for its ready pattern; stop it again on failure."""
     safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", spec.name)
@@ -75,6 +96,7 @@ def start_dut(spec: DutSpec, logs_dir: Path, redactor: Redactor, logger: logging
         logs_dir / f"{safe_name}.log",
         redactor,
         logger,
+        stdin=spec.stdin,
         container_name=spec.container_name,
     ).start()
     try:
@@ -96,7 +118,15 @@ def config() -> HarnessConfig:
 
 @pytest.fixture(scope="session")
 def redactor(config: HarnessConfig) -> Redactor:
-    return Redactor([str(config.passcode), manual_pairing_code(config.passcode, config.discriminator)])
+    # The manual pairing codes of both devices derive from the same passcode but differ in
+    # the discriminator; both are secrets.
+    return Redactor(
+        [
+            str(config.passcode),
+            manual_pairing_code(config.passcode, config.discriminator),
+            manual_pairing_code(config.passcode, config.engine_discriminator),
+        ]
+    )
 
 
 @pytest.fixture(scope="session")
@@ -152,3 +182,47 @@ def commissioned_dut(dut: DutHandle, chiptool: ChipTool) -> CommissionedDut:
     """The device under test on chip-tool's fabric; every scenario builds on this first admin."""
     chiptool.pair(CHIPTOOL_NODE_ID)
     return CommissionedDut(dut, CHIPTOOL_NODE_ID)
+
+
+@pytest.fixture(scope="session")
+def engine_dut(config: HarnessConfig, redactor: Redactor, harness_logger: logging.Logger, docker: bool):
+    """The engine example as a native process on a temporary state directory.
+
+    Skips when ``INTEROP_ENGINE_DUT`` is unset; with ``INTEROP_REQUIRE_DOCKER`` that is a failure,
+    because the workflow builds the example and expects it to run.
+    """
+    if config.engine_dut_binary is None:
+        message = "INTEROP_ENGINE_DUT does not name the built onoff_node example; the engine DUT scenarios need it"
+        if config.require_docker:
+            pytest.fail(message)
+        pytest.skip(message)
+    if not config.engine_dut_binary.is_file():
+        pytest.fail(f"INTEROP_ENGINE_DUT names {config.engine_dut_binary}, which is not a file")
+    state_dir = Path(tempfile.mkdtemp(prefix="interop-engine-state-"))
+    spec = config.engine_dut(state_dir)
+    engine = EngineDut(spec, config.logs_dir / "dut", redactor, harness_logger).start()
+    yield engine
+    engine.stop()
+    shutil.rmtree(state_dir, ignore_errors=True)
+
+
+@pytest.fixture(scope="session")
+def engine_chiptool(config: HarnessConfig, redactor: Redactor, harness_logger: logging.Logger, docker: bool):
+    """A chip-tool with its own fabric for the engine DUT, filtering on its discriminator."""
+    tool = ChipTool(
+        config,
+        redactor,
+        harness_logger,
+        config.logs_dir / "engine-chip-tool",
+        component="engine-chip-tool",
+        discriminator=config.engine_discriminator,
+    )
+    yield tool
+    remove_volume(tool.volume)
+
+
+@pytest.fixture(scope="session")
+def engine_commissioned_dut(engine_dut: EngineDut, engine_chiptool: ChipTool) -> CommissionedEngineDut:
+    """The engine DUT on its chip-tool's fabric."""
+    engine_chiptool.pair(ENGINE_CHIPTOOL_NODE_ID)
+    return CommissionedEngineDut(engine_dut, ENGINE_CHIPTOOL_NODE_ID)
