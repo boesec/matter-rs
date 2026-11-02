@@ -84,7 +84,8 @@ jobs:
       # The engine example is the second device under test. The pinned toolchain comes from
       # rust-toolchain.toml; the registry, git and release build caches are keyed on the lock
       # file and the toolchain, with the sources as a secondary key so an unchanged dependency
-      # set reuses its compiled artefacts.
+      # set reuses its compiled artefacts. Restore and save are separate steps so that the
+      # build is kept even when the scenarios fail; a failing scenario is what the cache is for.
       - name: Install the pinned Rust toolchain
         working-directory: .
         run: |
@@ -98,8 +99,9 @@ jobs:
           rustup show active-toolchain
           cargo --version
 
-      - name: Cache cargo registry, git sources and the release build
-        uses: actions/cache@v4
+      - name: Restore the cargo registry, git sources and the release build
+        id: cargo-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry/index
@@ -121,6 +123,17 @@ jobs:
           echo "ENGINE_BUILD_SECONDS=$((ended - started))" >> "$GITHUB_ENV"
           ls -l "$INTEROP_ENGINE_DUT"
           "$INTEROP_ENGINE_DUT" --unknown-argument || true
+
+      - name: Save the cargo registry, git sources and the release build
+        if: always() && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target/release
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
       - uses: actions/setup-python@v5
         with:

@@ -262,8 +262,13 @@ def test_engine_python_conformance(
     """The connectedhomeip bridged-device and composition scripts pass against the node with its PICS.
 
     `TC_BRBINFO_2_1` commissions the node through the framework as another fabric;
-    `TC_DeviceBasicComposition` (with `TC_DESC_2_1` and `TC_DESC_2_2`) then runs on that fabric
-    over CASE. Steps the framework skips are reported with its reason, not hidden.
+    `TC_DeviceBasicComposition` (with `TC_DESC_2_1`, `TC_DESC_2_2` and `TC_IDM_10_1`) then runs
+    on that fabric over CASE. Steps the framework skips are reported with its reason, not hidden.
+
+    This scenario runs last on the engine DUT: the framework's cleanup removes every fabric
+    that was not in its baseline, chip-tool's included, so nothing may need chip-tool's fabric
+    on this node afterwards. The order also keeps the composition script off the PASE session
+    the framework reuses when it commissioned the node itself (see the README).
     """
     assert PICS_FILE.is_file(), f"PICS file missing: {PICS_FILE}"
     node, endpoint = engine_commissioned_dut.node_id, engine_commissioned_dut.endpoint
@@ -278,38 +283,6 @@ def test_engine_python_conformance(
             ("TC_BRBINFO_2_1.py", ("test_TC_BRBINFO_2_1",), ("--endpoint", str(endpoint))),
             ("TC_DeviceBasicComposition.py", ("test_TC_DESC_2_1", "test_TC_DESC_2_2", "test_TC_IDM_10_1"), ()),
         ],
-        code,
-        harness_logger,
-    )
-    assert not problems, "\n\n".join(problems)
-
-
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "the node drops the PASE session once commissioning completes; the framework keeps using that "
-        "session when it commissioned the node itself, and TC_IDM_10_1's event subscription over it "
-        "fails with 'Not connected' where the reference SDK answers UnsupportedAccess"
-    ),
-)
-@pytest.mark.timeout(900)
-def test_engine_python_composition_right_after_commissioning(
-    engine_commissioned_dut: CommissionedEngineDut,
-    engine_chiptool: ChipTool,
-    config: HarnessConfig,
-    redactor: Redactor,
-    harness_logger: logging.Logger,
-) -> None:
-    """`TC_DeviceBasicComposition` in the same framework process that commissioned the node."""
-    node = engine_commissioned_dut.node_id
-    code = engine_chiptool.open_commissioning_window(node, (config.engine_discriminator + 3) & 0xFFF)
-    runner = PythonTestRunner(
-        config, redactor, harness_logger, config.logs_dir / "engine-python-tc-pase", component="engine-python-tc-pase"
-    )
-    problems = run_framework_scripts(
-        runner,
-        [("TC_DeviceBasicComposition.py", ("test_TC_DESC_2_1", "test_TC_DESC_2_2", "test_TC_IDM_10_1"), ())],
         code,
         harness_logger,
     )
