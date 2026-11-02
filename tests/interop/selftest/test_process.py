@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from harness.process import HarnessError, HarnessTimeout, ManagedProcess
+from harness.process import HarnessError, HarnessTimeout, ManagedProcess, strip_ansi
 from harness.redact import MASK, Redactor
 
 LOGGER = logging.getLogger("interop.selftest")
@@ -90,3 +90,17 @@ def test_run_reports_a_non_zero_exit(tmp_path: Path) -> None:
         process.run(timeout=30)
     assert "exited with code 3" in str(failure.value)
     assert "| boom" in str(failure.value)
+
+
+def test_terminal_escape_sequences_are_stripped(tmp_path: Path) -> None:
+    assert strip_ansi("\x1b[0J\x1b[0;32m[TOO]   OnOff: TRUE\x1b[0m") == "[TOO]   OnOff: TRUE"
+    assert strip_ansi("plain text") == "plain text"
+    process = ManagedProcess(
+        "colour",
+        python("print('\\x1b[0;34mNodeLabel: \"Kitchen\"\\x1b[0m')"),
+        tmp_path / "colour.log",
+        Redactor(),
+        LOGGER,
+    )
+    process.run(timeout=30)
+    assert process.lines == ['NodeLabel: "Kitchen"']

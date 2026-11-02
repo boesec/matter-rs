@@ -19,6 +19,14 @@ from pathlib import Path
 from harness.redact import Redactor
 
 DEFAULT_TAIL = 30
+# chip-tool colours its output and clears the line before every log record; the escape
+# sequences would otherwise end up in values the scenarios compare (`"Kitchen"\x1b[0m`).
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def strip_ansi(line: str) -> str:
+    """Remove terminal escape sequences (colours, cursor and line control) from ``line``."""
+    return ANSI_ESCAPE.sub("", line)
 
 
 class HarnessError(Exception):
@@ -85,7 +93,7 @@ class ManagedProcess:
         assert self._process is not None and self._process.stdout is not None
         with self.log_path.open("a", encoding="utf-8") as sink:
             for raw in iter(self._process.stdout.readline, b""):
-                line = self._redactor.redact(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
+                line = self._redactor.redact(strip_ansi(raw.decode("utf-8", errors="replace").rstrip("\r\n")))
                 sink.write(line + "\n")
                 sink.flush()
                 with self._condition:

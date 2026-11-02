@@ -215,31 +215,17 @@ def test_engine_removed_endpoint_is_unsupported(
             dut.remove(REMOVED_LIGHT)
 
 
-@pytest.mark.timeout(1500)
-def test_engine_python_conformance(
-    engine_commissioned_dut: CommissionedEngineDut,
-    engine_chiptool: ChipTool,
-    config: HarnessConfig,
-    redactor: Redactor,
-    harness_logger: logging.Logger,
-) -> None:
-    """The connectedhomeip composition and bridged-device scripts pass against the node with its PICS.
+def run_framework_scripts(
+    runner: PythonTestRunner,
+    scripts: list[tuple[str, tuple[str, ...], tuple[str, ...]]],
+    code: str,
+    logger: logging.Logger,
+) -> list[str]:
+    """Run the scripts in order (the first commissions with ``code``), return every problem.
 
-    The first script commissions the node through the framework as another fabric; the next
-    ones run on that fabric. Steps the framework skips are reported with its reason, not hidden.
+    A problem is a failed or errored record, a required record that did not pass, or a non-zero
+    exit of the framework. Skipped records are logged with the framework's reason.
     """
-    assert PICS_FILE.is_file(), f"PICS file missing: {PICS_FILE}"
-    node, endpoint = engine_commissioned_dut.node_id, engine_commissioned_dut.endpoint
-
-    code = engine_chiptool.open_commissioning_window(node, (config.engine_discriminator + 2) & 0xFFF)
-    runner = PythonTestRunner(
-        config, redactor, harness_logger, config.logs_dir / "engine-python-tc", component="engine-python-tc"
-    )
-
-    scripts = [
-        ("TC_DeviceBasicComposition.py", ("test_TC_DESC_2_1", "test_TC_DESC_2_2"), ()),
-        ("TC_BRBINFO_2_1.py", ("test_TC_BRBINFO_2_1",), ("--endpoint", str(endpoint))),
-    ]
     problems: list[str] = []
     skipped: list[str] = []
     for index, (script, required, extra_args) in enumerate(scripts):
@@ -259,5 +245,72 @@ def test_engine_python_conformance(
         if process.returncode != 0:
             problems.append(f"{script}: framework exit code {process.returncode}\n{process.tail()}")
     for line in skipped:
-        harness_logger.info("framework skip: %s", line)
-    assert not problems, "\n\n".join(problems) + ("\n\nskipped:\n" + "\n".join(skipped) if skipped else "")
+        logger.info("framework skip: %s", line)
+    if problems and skipped:
+        problems.append("skipped:\n" + "\n".join(skipped))
+    return problems
+
+
+@pytest.mark.timeout(1500)
+def test_engine_python_conformance(
+    engine_commissioned_dut: CommissionedEngineDut,
+    engine_chiptool: ChipTool,
+    config: HarnessConfig,
+    redactor: Redactor,
+    harness_logger: logging.Logger,
+) -> None:
+    """The connectedhomeip bridged-device and composition scripts pass against the node with its PICS.
+
+    `TC_BRBINFO_2_1` commissions the node through the framework as another fabric;
+    `TC_DeviceBasicComposition` (with `TC_DESC_2_1` and `TC_DESC_2_2`) then runs on that fabric
+    over CASE. Steps the framework skips are reported with its reason, not hidden.
+    """
+    assert PICS_FILE.is_file(), f"PICS file missing: {PICS_FILE}"
+    node, endpoint = engine_commissioned_dut.node_id, engine_commissioned_dut.endpoint
+
+    code = engine_chiptool.open_commissioning_window(node, (config.engine_discriminator + 2) & 0xFFF)
+    runner = PythonTestRunner(
+        config, redactor, harness_logger, config.logs_dir / "engine-python-tc", component="engine-python-tc"
+    )
+    problems = run_framework_scripts(
+        runner,
+        [
+            ("TC_BRBINFO_2_1.py", ("test_TC_BRBINFO_2_1",), ("--endpoint", str(endpoint))),
+            ("TC_DeviceBasicComposition.py", ("test_TC_DESC_2_1", "test_TC_DESC_2_2", "test_TC_IDM_10_1"), ()),
+        ],
+        code,
+        harness_logger,
+    )
+    assert not problems, "\n\n".join(problems)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "the node drops the PASE session once commissioning completes; the framework keeps using that "
+        "session when it commissioned the node itself, and TC_IDM_10_1's event subscription over it "
+        "fails with 'Not connected' where the reference SDK answers UnsupportedAccess"
+    ),
+)
+@pytest.mark.timeout(900)
+def test_engine_python_composition_right_after_commissioning(
+    engine_commissioned_dut: CommissionedEngineDut,
+    engine_chiptool: ChipTool,
+    config: HarnessConfig,
+    redactor: Redactor,
+    harness_logger: logging.Logger,
+) -> None:
+    """`TC_DeviceBasicComposition` in the same framework process that commissioned the node."""
+    node = engine_commissioned_dut.node_id
+    code = engine_chiptool.open_commissioning_window(node, (config.engine_discriminator + 3) & 0xFFF)
+    runner = PythonTestRunner(
+        config, redactor, harness_logger, config.logs_dir / "engine-python-tc-pase", component="engine-python-tc-pase"
+    )
+    problems = run_framework_scripts(
+        runner,
+        [("TC_DeviceBasicComposition.py", ("test_TC_DESC_2_1", "test_TC_DESC_2_2", "test_TC_IDM_10_1"), ())],
+        code,
+        harness_logger,
+    )
+    assert not problems, "\n\n".join(problems)
