@@ -1,25 +1,24 @@
-//! The engine contract on rs-matter, in process: the tests of the fake engine that need no
-//! Matter client, run against a real node on a dedicated thread, plus what only this engine
-//! can show (mDNS, storage, logs, the response timeout).
+//! The engine contract on rs-matter, in process: the engine-agnostic suite of the facade
+//! (`matter_rs_engine::contract`) run against a real node on a dedicated thread, plus what
+//! only this engine can show: fabrics minted into the storage and read back, mDNS
+//! announcements, the response timeout, the state file permissions, the log capture and the
+//! refusals that come from rs-matter itself.
 //!
 //! Every test starts its own node on an ephemeral Matter port; the mDNS responders share port
 //! 5353. The interface comes from the engine's heuristic, or from `MATTER_RS_TEST_INTERFACE`.
 
-use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
-use std::pin::pin;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
-use std::task::{Context, Poll, Wake, Waker};
-use std::thread::{self, Thread};
+use std::thread;
 use std::time::{Duration, Instant};
 
+use matter_rs_engine::contract::{EngineUnderTest, block_on_within};
 use matter_rs_engine::testing::block_on;
 use matter_rs_engine::{
-    Attestation, AttributeId, AttributeValue, Capabilities, ClusterDescription, ClusterId,
-    CommandId, CommissioningState, Correlation, DeviceType, DeviceTypeId, EndpointDescription,
-    EndpointId, Engine, Error, Event, EventId, FabricIndex, MemoryStorage, NetworkConfig,
-    NodeIdentity, NodeRole, ProductId, REDACTED, Response, Running, Secret, Status, StopReason,
-    Storage, Value, VendorId, Window, bridged_device,
+    Attestation, AttributeId, Capabilities, ClusterDescription, ClusterId, CommandId,
+    CommissioningState, DeviceType, DeviceTypeId, EndpointDescription, EndpointId, Engine, Error,
+    Event, FabricIndex, MemoryStorage, NetworkConfig, NodeIdentity, NodeRole, ProductId, Response,
+    Running, Secret, Status, StopReason, Storage, Value, VendorId, Window,
 };
 use rs_matter::Matter;
 use rs_matter::cert::r#gen::VALID_FOREVER;
@@ -45,7 +44,6 @@ const TOGGLE: CommandId = CommandId::new(0x02);
 const LEVEL: ClusterId = ClusterId::new(0x0008);
 const CURRENT_LEVEL: AttributeId = AttributeId::new(0x0000);
 const ON_OFF_LIGHT: DeviceTypeId = DeviceTypeId::new(0x0100);
-const NODE_LABEL: AttributeId = AttributeId::new(0x0005);
 
 /// The passcode of every test identity; the test vector of the reference study.
 const PASSCODE: u32 = 20_202_021;
@@ -85,6 +83,22 @@ fn network() -> NetworkConfig {
 fn engine() -> RsMatterEngine {
     RsMatterEngine::new().with_response_timeout(Duration::from_millis(200))
 }
+
+/// The rs-matter engine as the engine-agnostic suite sees it: a short response timeout and a
+/// small endpoint capacity, so that the capacity case exhausts it quickly.
+struct RsMatterUnderTest;
+
+impl EngineUnderTest for RsMatterUnderTest {
+    fn engine(&self) -> Box<dyn Engine> {
+        Box::new(engine().with_endpoint_capacity(8))
+    }
+
+    fn network(&self) -> NetworkConfig {
+        network()
+    }
+}
+
+matter_rs_engine::contract_tests!(RsMatterUnderTest);
 
 fn start_with(
     engine: &RsMatterEngine,
@@ -133,18 +147,6 @@ fn level_cluster() -> ClusterDescription {
     }
 }
 
-fn bridged_device_cluster() -> ClusterDescription {
-    ClusterDescription {
-        id: bridged_device::CLUSTER,
-        revision: 6,
-        feature_map: 0,
-        attributes: vec![NODE_LABEL, bridged_device::REACHABLE],
-        accepted_commands: vec![],
-        generated_commands: vec![],
-        events: vec![bridged_device::REACHABLE_CHANGED],
-    }
-}
-
 fn light(id: EndpointId) -> EndpointDescription {
     EndpointDescription {
         id,
@@ -161,30 +163,6 @@ fn light(id: EndpointId) -> EndpointDescription {
     }
 }
 
-/// Runs a future to completion, failing the test when `timeout` passes first.
-fn block_on_within<F: Future>(future: F, timeout: Duration) -> F::Output {
-    struct ThreadWaker(Thread);
-
-    impl Wake for ThreadWaker {
-        fn wake(self: Arc<Self>) {
-            self.0.unpark();
-        }
-    }
-
-    let deadline = Instant::now() + timeout;
-    let mut future = pin!(future);
-    let waker = Waker::from(Arc::new(ThreadWaker(thread::current())));
-    let mut context = Context::from_waker(&waker);
-    loop {
-        if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
-            return output;
-        }
-        let now = Instant::now();
-        assert!(now < deadline, "timed out after {timeout:?}");
-        thread::park_timeout(deadline - now);
-    }
-}
-
 fn next_event(node: &dyn Running) -> Event {
     block_on_within(node.next_event(), EVENT_TIMEOUT).expect("an event")
 }
@@ -193,78 +171,10 @@ fn stop(node: &dyn Running) {
     block_on_within(node.stop(), EVENT_TIMEOUT).expect("the node stops");
 }
 
+/// The endpoint capacity is a setting of this engine, and its other limits are rs-matter's
+/// compile-time constants.
 #[test]
-fn start_stop_restart() {
-    let engine = engine();
-    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
-    let node = start(&engine, Arc::clone(&storage));
-    assert_eq!(
-        block_on(node.commissioning_state()).unwrap(),
-        CommissioningState {
-            commissioned: false,
-            window: Some(Window::Basic),
-        }
-    );
-    block_on(node.add_endpoint(light(LIGHT))).unwrap();
-    stop(&*node);
-    assert_eq!(next_event(&*node), Event::Stopped(StopReason::Requested));
-    assert_eq!(block_on(node.next_event()), Err(Error::NotRunning));
-    assert_eq!(block_on(node.stop()), Err(Error::NotRunning));
-
-    // The same engine starts again on the same storage; endpoints are not persisted.
-    let node = start(&engine, storage);
-    assert_eq!(block_on(node.fabrics()).unwrap(), vec![]);
-    block_on(node.add_endpoint(light(LIGHT))).unwrap();
-    stop(&*node);
-    assert_eq!(next_event(&*node), Event::Stopped(StopReason::Requested));
-}
-
-#[test]
-fn duplicate_endpoint_rejected() {
-    let engine = engine();
-    let node = start(&engine, Arc::new(MemoryStorage::new()));
-    block_on(node.add_endpoint(light(LIGHT))).unwrap();
-    assert_eq!(
-        block_on(node.add_endpoint(light(LIGHT))),
-        Err(Error::DuplicateEndpoint(LIGHT))
-    );
-    assert_eq!(
-        block_on(node.add_endpoint(light(AGGREGATOR))),
-        Err(Error::DuplicateEndpoint(AGGREGATOR))
-    );
-    let root = block_on(node.add_endpoint(light(EndpointId::new(0)))).unwrap_err();
-    assert!(
-        matches!(&root, Error::InvalidDescription { endpoint, reason }
-            if *endpoint == EndpointId::new(0) && reason.contains("root")),
-        "{root}"
-    );
-    stop(&*node);
-}
-
-#[test]
-fn missing_initial_value_rejected() {
-    let engine = engine();
-    let node = start(&engine, Arc::new(MemoryStorage::new()));
-    let without_level = EndpointDescription {
-        initial_values: vec![(ON_OFF, ON_OFF_ATTRIBUTE, Value::Bool(false))],
-        ..light(LIGHT)
-    };
-    match block_on(node.add_endpoint(without_level)).unwrap_err() {
-        Error::InvalidDescription { endpoint, reason } => {
-            assert_eq!(endpoint, LIGHT);
-            assert!(reason.contains("0x0000"), "{reason}");
-            assert!(reason.contains("0x0008"), "{reason}");
-            assert!(reason.contains("no initial value"), "{reason}");
-        }
-        other => panic!("unexpected error {other:?}"),
-    }
-    // The endpoint was not added: the id is free.
-    block_on(node.add_endpoint(light(LIGHT))).unwrap();
-    stop(&*node);
-}
-
-#[test]
-fn capacity_reported() {
+fn configured_capacity_is_reported() {
     let engine = engine().with_endpoint_capacity(2);
     let expected = Capabilities {
         max_endpoints: Some(2),
@@ -280,14 +190,6 @@ fn capacity_reported() {
     assert_eq!(
         block_on(node.add_endpoint(light(EndpointId::new(4)))),
         Err(Error::CapacityExceeded { what: "endpoints" })
-    );
-    block_on(node.remove_endpoint(EndpointId::new(2))).unwrap();
-    block_on(node.add_endpoint(light(EndpointId::new(4)))).unwrap();
-    assert_eq!(
-        block_on(node.open_commissioning_window(Window::Enhanced, Duration::from_secs(60))),
-        Err(Error::Unsupported {
-            operation: "enhanced commissioning window"
-        })
     );
     stop(&*node);
 }
@@ -558,19 +460,23 @@ fn node_announces_on_mdns() {
 
     let group = SocketAddr::V4(SocketAddrV4::new(MDNS_IPV4_BROADCAST_ADDR, MDNS_PORT));
     let direct = SocketAddr::V4(SocketAddrV4::new(ipv4, MDNS_PORT));
+    // DNS wire format puts a length byte before every label, so the service name is matched
+    // by its first label and the node by the discriminator in its TXT record.
     let is_announcement =
-        |packet: &[u8]| contains(packet, b"_matterc_udplocal") && contains(packet, b"D=2345");
+        |packet: &[u8]| contains(packet, b"_matterc") && contains(packet, b"D=2345");
+    // Other tests of this process run their own nodes, which answer the same queries; every
+    // packet that is waiting is read, not just the first one, so that their announcements
+    // cannot crowd this node's out.
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut seen = false;
     let mut buffer = [0_u8; 2048];
     while Instant::now() < deadline && !seen {
         listener.send_to(&mdns_query(), group).unwrap();
         querier.send_to(&mdns_query(), direct).unwrap();
-        if let Ok((len, _)) = listener.recv_from(&mut buffer) {
-            seen = is_announcement(&buffer[..len]);
-        }
-        if !seen && let Ok((len, _)) = querier.recv_from(&mut buffer) {
-            seen = is_announcement(&buffer[..len]);
+        for socket in [&listener, &querier] {
+            while !seen && let Ok((len, _)) = socket.recv_from(&mut buffer) {
+                seen = is_announcement(&buffer[..len]);
+            }
         }
     }
     stop(&*node);
@@ -681,154 +587,11 @@ fn logs_contain_no_secret() {
     }
 }
 
+/// A second window while one is open is rs-matter's refusal, reported as an engine error.
 #[test]
-fn endpoint_lifecycle_and_values() {
+fn second_window_while_open_is_refused() {
     let engine = engine();
     let node = start(&engine, Arc::new(MemoryStorage::new()));
-    let unknown = EndpointId::new(99);
-    assert_eq!(
-        block_on(node.remove_endpoint(unknown)),
-        Err(Error::UnknownEndpoint(unknown))
-    );
-    assert_eq!(
-        block_on(node.set_attribute(unknown, ON_OFF, ON_OFF_ATTRIBUTE, Value::Bool(true))),
-        Err(Error::UnknownEndpoint(unknown))
-    );
-    assert_eq!(
-        block_on(node.emit_event(unknown, ON_OFF, EventId::new(0), Value::Null)),
-        Err(Error::UnknownEndpoint(unknown))
-    );
-    assert_eq!(
-        block_on(node.remove_endpoint(AGGREGATOR)),
-        Err(Error::UnknownEndpoint(AGGREGATOR))
-    );
-    assert_eq!(
-        block_on(node.add_endpoint(EndpointDescription {
-            parent: Some(EndpointId::new(7)),
-            ..light(LIGHT)
-        })),
-        Err(Error::UnknownEndpoint(EndpointId::new(7)))
-    );
-
-    block_on(node.add_endpoint(light(LIGHT))).unwrap();
-    assert_eq!(
-        block_on(node.set_attribute(LIGHT, ON_OFF, AttributeId::new(0x4000), Value::Bool(true))),
-        Err(Error::UnknownAttribute {
-            endpoint: LIGHT,
-            cluster: ON_OFF,
-            attribute: AttributeId::new(0x4000),
-        })
-    );
-    assert_eq!(
-        block_on(node.emit_event(LIGHT, ON_OFF, EventId::new(0), Value::Null)),
-        Err(Error::UnknownEvent {
-            endpoint: LIGHT,
-            cluster: ON_OFF,
-            event: EventId::new(0),
-        })
-    );
-    assert!(matches!(
-        block_on(node.set_reachable(LIGHT, false)),
-        Err(Error::UnknownEvent { .. })
-    ));
-    // All or nothing.
-    assert!(matches!(
-        block_on(node.set_attributes(vec![
-            AttributeValue {
-                endpoint: LIGHT,
-                cluster: ON_OFF,
-                attribute: ON_OFF_ATTRIBUTE,
-                value: Value::Bool(true),
-            },
-            AttributeValue {
-                endpoint: LIGHT,
-                cluster: LEVEL,
-                attribute: AttributeId::new(0x4000),
-                value: Value::U8(1),
-            },
-        ])),
-        Err(Error::UnknownAttribute { .. })
-    ));
-    block_on(node.set_attributes(vec![
-        AttributeValue {
-            endpoint: LIGHT,
-            cluster: ON_OFF,
-            attribute: ON_OFF_ATTRIBUTE,
-            value: Value::Bool(true),
-        },
-        AttributeValue {
-            endpoint: LIGHT,
-            cluster: LEVEL,
-            attribute: CURRENT_LEVEL,
-            value: Value::U8(100),
-        },
-    ]))
-    .unwrap();
-
-    // Composed endpoints go with their parent; the id can be used again.
-    let part = EndpointId::new(3);
-    block_on(node.add_endpoint(EndpointDescription {
-        parent: Some(LIGHT),
-        ..light(part)
-    }))
-    .unwrap();
-    block_on(node.remove_endpoint(LIGHT)).unwrap();
-    assert_eq!(
-        block_on(node.remove_endpoint(part)),
-        Err(Error::UnknownEndpoint(part))
-    );
-    block_on(node.add_endpoint(light(LIGHT))).unwrap();
-
-    // A bridged endpoint: reachability sets the attribute and emits the event.
-    let bridged = EndpointId::new(4);
-    let mut description = light(bridged);
-    description.clusters.push(bridged_device_cluster());
-    description
-        .initial_values
-        .push((bridged_device::CLUSTER, NODE_LABEL, Value::from("Kitchen")));
-    description.initial_values.push((
-        bridged_device::CLUSTER,
-        bridged_device::REACHABLE,
-        Value::Bool(true),
-    ));
-    block_on(node.add_endpoint(description)).unwrap();
-    block_on(node.set_reachable(bridged, false)).unwrap();
-    block_on(node.emit_event(
-        bridged,
-        bridged_device::CLUSTER,
-        bridged_device::REACHABLE_CHANGED,
-        Value::Struct(vec![(0, Value::Bool(true))]),
-    ))
-    .unwrap();
-
-    // Nothing of this reached the product as an event.
-    stop(&*node);
-    assert_eq!(next_event(&*node), Event::Stopped(StopReason::Requested));
-}
-
-#[test]
-fn commissioning_window_changes_are_events() {
-    let engine = engine();
-    let node = start(&engine, Arc::new(MemoryStorage::new()));
-    let open = CommissioningState {
-        commissioned: false,
-        window: Some(Window::Basic),
-    };
-    assert_eq!(block_on(node.commissioning_state()).unwrap(), open);
-
-    block_on(node.close_commissioning_window()).unwrap();
-    let closed = CommissioningState {
-        commissioned: false,
-        window: None,
-    };
-    assert_eq!(next_event(&*node), Event::CommissioningChanged(closed));
-    assert_eq!(block_on(node.commissioning_state()).unwrap(), closed);
-    // Closing a closed window is not a change.
-    block_on(node.close_commissioning_window()).unwrap();
-
-    block_on(node.open_commissioning_window(Window::Basic, Duration::from_secs(60))).unwrap();
-    assert_eq!(next_event(&*node), Event::CommissioningChanged(open));
-    // A second window while one is open is rs-matter's refusal.
     assert!(matches!(
         block_on(node.open_commissioning_window(Window::Basic, Duration::from_secs(60))),
         Err(Error::Engine(_))
@@ -837,17 +600,14 @@ fn commissioning_window_changes_are_events() {
     assert_eq!(next_event(&*node), Event::Stopped(StopReason::Requested));
 }
 
+/// The running node's pairing information is rs-matter's own computation, and it matches
+/// the offline computation of `pairing_info_for` and the known manual code of the test vector.
 #[test]
-fn pairing_info_is_redacted_and_matches() {
+fn pairing_info_matches_the_offline_computation() {
     let engine = engine();
     let node = start(&engine, Arc::new(MemoryStorage::new()));
     let info = block_on(node.pairing_info()).unwrap();
-    assert_eq!(info.discriminator, 3840);
     assert_eq!(info.manual_code.expose(), MANUAL_CODE);
-    assert!(info.qr_text.expose().starts_with("MT:"));
-    let output = format!("{info:?}");
-    assert!(output.contains(REDACTED), "{output}");
-    assert!(!output.contains(MANUAL_CODE), "{output}");
     assert_eq!(
         crate::pairing_info_for(&identity()).unwrap().qr_text,
         info.qr_text
@@ -855,110 +615,29 @@ fn pairing_info_is_redacted_and_matches() {
     stop(&*node);
 }
 
+/// A network configuration naming an interface the host does not have is refused before the
+/// node starts, and the engine is free afterwards.
 #[test]
-fn stop_ends_the_event_stream_and_the_node() {
+fn missing_interface_rejected() {
     let engine = engine();
-    let node = start(&engine, Arc::new(MemoryStorage::new()));
-    block_on(node.add_endpoint(light(LIGHT))).unwrap();
-    stop(&*node);
-    assert_eq!(next_event(&*node), Event::Stopped(StopReason::Requested));
-    assert_eq!(block_on(node.next_event()), Err(Error::NotRunning));
-    assert_eq!(block_on(node.stop()), Err(Error::NotRunning));
-    assert_eq!(
-        block_on(node.respond(Correlation::new(1), Response::success())),
-        Err(Error::NotRunning)
-    );
-    assert_eq!(
-        block_on(node.add_endpoint(light(EndpointId::new(3)))),
-        Err(Error::NotRunning)
-    );
-    assert_eq!(block_on(node.commissioning_state()), Err(Error::NotRunning));
-    assert_eq!(block_on(node.fabrics()), Err(Error::NotRunning));
-    assert_eq!(block_on(node.pairing_info()), Err(Error::NotRunning));
-    assert_eq!(block_on(node.factory_reset()), Err(Error::NotRunning));
-    assert_eq!(
-        block_on(node.close_commissioning_window()),
-        Err(Error::NotRunning)
-    );
-}
-
-#[test]
-fn engine_runs_one_node_at_a_time() {
-    let engine = engine();
-    let node = start(&engine, Arc::new(MemoryStorage::new()));
     let engine_ref: &dyn Engine = &engine;
-    let second = block_on(engine_ref.start(
+    let missing_interface = NetworkConfig {
+        interface: Some(String::from("no-such-interface")),
+        ..network()
+    };
+    let error = block_on(engine_ref.start(
         identity(),
-        network(),
+        missing_interface,
         Attestation::Test,
         NodeRole::Bridge {
             aggregator: AGGREGATOR,
         },
         Arc::new(MemoryStorage::new()),
-    ));
-    assert!(matches!(second, Err(Error::AlreadyRunning)));
-    // A response to a correlation nothing waits for is unknown while the node runs.
-    assert_eq!(
-        block_on(node.respond(Correlation::new(42), Response::success())),
-        Err(Error::UnknownCorrelation(Correlation::new(42)))
-    );
-    stop(&*node);
-    let _again = start(&engine, Arc::new(MemoryStorage::new()));
-}
-
-#[test]
-fn invalid_identity_rejected() {
-    let engine = engine();
-    let engine_ref: &dyn Engine = &engine;
-    let start_with = |identity: NodeIdentity, network: NetworkConfig| {
-        block_on(engine_ref.start(
-            identity,
-            network,
-            Attestation::Test,
-            NodeRole::Bridge {
-                aggregator: AGGREGATOR,
-            },
-            Arc::new(MemoryStorage::new()),
-        ))
-        .map(|_| ())
-    };
-
-    let mut wide_discriminator = identity();
-    wide_discriminator.discriminator = 0x1000;
-    let error = start_with(wide_discriminator, network()).unwrap_err();
-    assert!(
-        matches!(&error, Error::InvalidIdentity { reason } if reason.contains("discriminator"))
-    );
-
-    let mut forbidden_passcode = identity();
-    forbidden_passcode.passcode = Secret::new(12_345_678);
-    match start_with(forbidden_passcode, network()).unwrap_err() {
-        Error::InvalidIdentity { reason } => {
-            assert!(reason.contains("passcode"), "{reason}");
-            assert!(
-                !reason.contains("12345678"),
-                "the passcode leaked: {reason}"
-            );
-        }
-        other => panic!("unexpected error {other:?}"),
-    }
-
-    let no_family = NetworkConfig {
-        ipv4: false,
-        ipv6: false,
-        ..network()
-    };
-    let error = start_with(identity(), no_family).unwrap_err();
-    assert!(matches!(&error, Error::InvalidIdentity { reason } if reason.contains("IPv4")));
-
-    let missing_interface = NetworkConfig {
-        interface: Some(String::from("no-such-interface")),
-        ..network()
-    };
-    let error = start_with(identity(), missing_interface).unwrap_err();
+    ))
+    .map(|_| ())
+    .unwrap_err();
     assert!(matches!(&error, Error::InvalidIdentity { reason } if reason.contains("interface")));
 
-    // After a refused start the engine is free.
     let node = start(&engine, Arc::new(MemoryStorage::new()));
     stop(&*node);
 }
