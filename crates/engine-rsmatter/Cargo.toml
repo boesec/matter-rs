@@ -26,8 +26,11 @@ thiserror = { workspace = true, features = ["std"] }
 matter-rs-engine = { workspace = true, features = ["std", "testing"] }
 env_logger = { workspace = true }
 
+# The example is the controllable device under test of the interop harness; its protocol
+# parser has unit tests, and `tests/dut_protocol.rs` drives the built binary.
 [[example]]
 name = "onoff_node"
+test = true
 
 [lints]
 workspace = true
