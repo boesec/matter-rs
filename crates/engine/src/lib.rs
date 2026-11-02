@@ -25,6 +25,8 @@
 //! - **Errors** ([`Error`]) and the [`Secret`] wrapper for passcodes, keys and pairing codes.
 //! - **The fake engine** [`testing::FakeEngine`] behind the `testing` feature, for testing
 //!   product code without a Matter stack.
+//! - **The contract suite** [`contract`] behind the same feature: the cases every engine
+//!   implementation must pass, run through [`contract_tests!`].
 //!
 //! # Where the semantics live
 //!
@@ -168,6 +170,8 @@
 
 extern crate alloc;
 
+#[cfg(feature = "testing")]
+pub mod contract;
 mod description;
 pub mod engine;
 mod error;

@@ -1,6 +1,7 @@
 # Interop harness: chip-tool, the connectedhomeip Python test framework and the matter.js shell in
-# pinned containers against a device under test. Everything about it, including the networking
-# findings for this runner, is in tests/interop/README.md.
+# pinned containers against two devices under test: the matter.js light and the engine example
+# of this repository, built on the runner. Everything about it, including the networking findings
+# for this runner, is in tests/interop/README.md.
 name: Interop
 
 on:
@@ -28,10 +29,14 @@ jobs:
     # The certification image is published for linux/arm64 only, so the job runs on GitHub's
     # arm64 runner instead of ubuntu-latest (amd64); see tests/interop/README.md.
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       INTEROP_REQUIRE_DOCKER: "1"
       PYTHONPATH: .
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+      # The engine example is built below and started natively by the harness.
+      INTEROP_ENGINE_DUT: ${{ github.workspace }}/target/release/examples/onoff_node
     steps:
       - uses: actions/checkout@v4
 
@@ -40,13 +45,14 @@ jobs:
           ip -o link
           ip -6 addr
           echo "disable_ipv6(all)=$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6)"
-          (ss -lunp | grep -E ':5353|:5540' || true)
+          (ss -lunp | grep -E ':5353|:5540|:5541' || true)
           docker version --format 'docker {{.Server.Version}} {{.Server.Os}}/{{.Server.Arch}}'
 
       # The runner has IPv6 in the kernel and a link-local address on its interface, but no
       # routable IPv6 address. The ipv6only chip-tool and the Python controller must reach the
-      # device under test over IPv6; a unique-local address on the default-route interface gives
-      # every mDNS record a non-link-local AAAA to use.
+      # devices under test over IPv6; a unique-local address on the default-route interface gives
+      # every mDNS record a non-link-local AAAA to use. The engine example announces on the same
+      # interface, so its name is handed to the harness.
       - name: Enable IPv6 and add a unique-local address to the default interface
         run: |
           set -euxo pipefail
@@ -58,6 +64,7 @@ jobs:
           sudo ip -6 addr add fd12:3456:789a::1/64 dev "$IFACE"
           ip -6 addr show dev "$IFACE"
           ping -6 -c 1 ::1
+          echo "INTEROP_ENGINE_INTERFACE=$IFACE" >> "$GITHUB_ENV"
 
       # chip-tool in the certification image is built with platform mDNS: it talks to the host's
       # avahi-daemon over the D-Bus socket that the containers mount.
@@ -73,6 +80,60 @@ jobs:
           ls -l /var/run/dbus/system_bus_socket
           avahi-daemon --version
           (avahi-browse -a -t -p || true) | head -20
+
+      # The engine example is the second device under test. The pinned toolchain comes from
+      # rust-toolchain.toml; the registry, git and release build caches are keyed on the lock
+      # file and the toolchain, with the sources as a secondary key so an unchanged dependency
+      # set reuses its compiled artefacts. Restore and save are separate steps so that the
+      # build is kept even when the scenarios fail; a failing scenario is what the cache is for.
+      - name: Install the pinned Rust toolchain
+        working-directory: .
+        run: |
+          set -euxo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup toolchain install
+          rustup show active-toolchain
+          cargo --version
+
+      - name: Restore the cargo registry, git sources and the release build
+        id: cargo-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target/release
+          key: interop-cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('crates/**/*.rs', 'crates/**/Cargo.toml') }}
+          restore-keys: |
+            interop-cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
+            interop-cargo-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Build the engine example (release)
+        working-directory: .
+        run: |
+          set -euxo pipefail
+          started=$(date +%s)
+          cargo build --release -p matter-rs-engine-rsmatter --example onoff_node
+          ended=$(date +%s)
+          echo "ENGINE_BUILD_SECONDS=$((ended - started))" >> "$GITHUB_ENV"
+          ls -l "$INTEROP_ENGINE_DUT"
+          "$INTEROP_ENGINE_DUT" --unknown-argument || true
+
+      - name: Save the cargo registry, git sources and the release build
+        if: always() && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target/release
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
       - uses: actions/setup-python@v5
         with:
@@ -115,10 +176,15 @@ jobs:
       - name: Build the matter.js image
         run: docker build -t matter-rs-interop-matterjs:local containers/matterjs
 
+      # Both device sets run in one pytest session: the matter.js scenarios and the engine
+      # scenarios, each DUT on its own port and discriminator with its own chip-tool fabric.
       - name: Run the interop scenarios
         run: |
           set -o pipefail
+          started=$(date +%s)
           python -m pytest -v 2>&1 | tee "$RUNNER_TEMP/pytest.log"
+          ended=$(date +%s)
+          echo "SCENARIO_SECONDS=$((ended - started))" >> "$GITHUB_ENV"
 
       # Unauthenticated readers of the run cannot download artefacts; the tails on the console and
       # the summary are what a failure is diagnosed from.
@@ -138,10 +204,12 @@ jobs:
             echo "## Interop scenarios"
             echo
             echo '```'
-            grep -E "(PASSED|FAILED|ERROR|SKIPPED)" "$RUNNER_TEMP/pytest.log" | grep -E '::' || true
+            grep -E "(PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)" "$RUNNER_TEMP/pytest.log" | grep -E '::' || true
             echo
             tail -n 3 "$RUNNER_TEMP/pytest.log"
             echo '```'
+            echo
+            echo "Engine example build: ${ENGINE_BUILD_SECONDS:-?} s; scenarios: ${SCENARIO_SECONDS:-?} s."
             echo
             echo "## Runner network"
             echo

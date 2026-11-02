@@ -105,38 +105,54 @@ def find_summary(root: Path) -> Path | None:
 
 
 class PythonTestRunner:
-    def __init__(self, config: HarnessConfig, redactor: Redactor, logger: logging.Logger, logs_dir: Path) -> None:
+    def __init__(
+        self,
+        config: HarnessConfig,
+        redactor: Redactor,
+        logger: logging.Logger,
+        logs_dir: Path,
+        *,
+        component: str = "python-tc",
+    ) -> None:
+        """A runner whose framework storage (its fabric) lives in the volume named ``component``."""
         self._config = config
         self._redactor = redactor
         self._logger = logger
         self._logs_dir = logs_dir
-        self.volume = config.volume_name("python-tc")
+        self._component = component
+        self._counter = 0
+        self.volume = config.volume_name(component)
 
     def run(
         self,
         script: str,
-        manual_code: str,
+        manual_code: str | None,
         pics_file: Path,
         *,
         timeout: float = 420.0,
         extra_args: tuple[str, ...] = (),
     ) -> tuple[ManagedProcess, TcResult]:
-        """Run ``script`` (a ``TC_*.py`` file of the framework) and parse its summary."""
-        host_logs = self._logs_dir / "framework"
+        """Run ``script`` (a ``TC_*.py`` file of the framework) and parse its summary.
+
+        With a ``manual_code`` the framework commissions the device first (a fresh fabric in this
+        runner's storage); with ``None`` it runs on the fabric an earlier run of this runner
+        left in its storage, which is how several scripts share one commissioning.
+        """
+        host_logs = self._logs_dir / "framework" / Path(script).stem
         host_logs.mkdir(parents=True, exist_ok=True)
         # The container runs as root and writes the framework logs into a bind mount; hand them
         # back to the calling user so the harness can redact them in place afterwards.
         owner = f"{os.getuid()}:{os.getgid()}" if hasattr(os, "getuid") else "0:0"
         inner = f'python3 "$0" "$@"; status=$?; chown -R {owner} /logs; exit $status'
+        commissioning = (
+            () if manual_code is None else ("--commissioning-method", "on-network", "--manual-code", manual_code)
+        )
         args = (
             "bash",
             "-c",
             inner,
             f"{SCRIPTS_DIR}/{script}",
-            "--commissioning-method",
-            "on-network",
-            "--manual-code",
-            manual_code,
+            *commissioning,
             "--PICS",
             f"/pics/{pics_file.name}",
             "--storage-path",
@@ -149,7 +165,8 @@ class PythonTestRunner:
             "/paa",
             *extra_args,
         )
-        name = self._config.container_name("python-tc")
+        self._counter += 1
+        name = self._config.container_name(f"{self._component}-{self._counter}")
         command = run_command(
             self._config.chip_image,
             args,
@@ -167,7 +184,7 @@ class PythonTestRunner:
         process = ManagedProcess(
             f"python-tc {script}",
             command,
-            self._logs_dir / f"{Path(script).stem}.log",
+            self._logs_dir / f"{self._counter:02d}-{Path(script).stem}.log",
             self._redactor,
             self._logger,
             container_name=name,

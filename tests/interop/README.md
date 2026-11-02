@@ -8,9 +8,19 @@ reference controllers in pinned Linux containers:
 - the **matter.js shell** as a second controller, from a small image built here with the pinned
   `@matter/*` packages.
 
-The first DUT is a matter.js on/off light from the same image. Our own binary becomes the DUT by
-changing one fixture parameter (see [Swapping the DUT](#swapping-the-device-under-test)); the
-scenarios do not change.
+Two devices under test run side by side, each on its own port and discriminator and each with
+its own chip-tool fabric:
+
+- a **matter.js on/off light** from the same image (`dut`, `chiptool`, `commissioned_dut`), the
+  reference device that shows the harness itself works;
+- the **engine example `onoff_node`** of this repository, built on the runner from
+  `crates/engine-rsmatter/examples/onoff_node.rs` and started natively (`engine_dut`,
+  `engine_chiptool`, `engine_commissioned_dut`). It takes orders on its standard input, so the
+  scenarios can add and remove endpoints while chip-tool watches; see
+  [The engine example as device under test](#the-engine-example-as-device-under-test).
+
+Any other program takes the matter.js light's place by changing one fixture parameter (see
+[Swapping the DUT](#swapping-the-device-under-test)); the scenarios do not change.
 
 The runner is pytest. Every scenario has a timeout, every process the harness starts writes its
 output to `logs/`, and every assertion that fails on a counterpart carries the last lines of the
@@ -21,13 +31,13 @@ uploads `logs/` as an artefact.
 
 | Path | Purpose |
 |---|---|
-| `conftest.py` | Fixtures: configuration, redactor, harness log, the DUT, chip-tool, the commissioned DUT |
-| `harness/` | The harness: process control with log collection (`process.py`), redaction (`redact.py`), chip-tool (`chiptool.py`), the shell (`shell.py`), the Python framework runner (`pythontc.py`), pins and configuration (`config.py`), manual pairing code (`pairing.py`) |
-| `scenarios/test_*.py` | The scenarios (below) |
+| `conftest.py` | Fixtures: configuration, redactor, harness log, both DUTs, their chip-tools, the commissioned DUTs |
+| `harness/` | The harness: process control with log collection (`process.py`), redaction (`redact.py`), chip-tool with its interactive session (`chiptool.py`), the engine DUT driver (`enginedut.py`), the shell (`shell.py`), the Python framework runner (`pythontc.py`), pins and configuration (`config.py`), manual pairing code (`pairing.py`) |
+| `scenarios/test_*.py` | The scenarios (below); `test_engine.py` holds the engine DUT scenarios |
 | `selftest/test_*.py` | Tests of the harness itself; run without Docker |
 | `containers/images.toml` | Every image with tag and digest; the harness pulls by digest |
 | `containers/matterjs/` | `Dockerfile`, `package.json`, `package-lock.json` and `device.mjs` of the matter.js image |
-| `pics/` | Hand-written PICS files, one per DUT |
+| `pics/` | Hand-written PICS files, one per DUT (`matterjs-onoff.pics`, `engine-onoff-node.pics`) |
 | `requirements.txt`, `pyproject.toml` | Pinned Python tools; pytest and ruff configuration |
 | `logs/` | Collected logs of the last run (git-ignored) |
 
@@ -65,6 +75,55 @@ The digests were read from the registries' manifests on 2026-11-01. The self-tes
 The scenarios share one DUT and one chip-tool fabric (session fixtures), in this order: chip-tool
 first, then the shell, then the Python test. If chip-tool's commissioning fails, every scenario
 that builds on it reports that same error.
+
+### The engine example as device under test
+
+`scenarios/test_engine.py` runs against the engine example, started natively from the binary
+`INTEROP_ENGINE_DUT` names, on a temporary state directory, port `INTEROP_ENGINE_DUT_PORT`
+(5541) and discriminator `INTEROP_ENGINE_DISCRIMINATOR` (3841), with the same passcode as the
+matter.js light. The example starts with its aggregator at endpoint 1 and one on/off light at
+endpoint 2 and takes a line protocol on standard input (documented in full in the example's
+source): `add <endpoint> <device-type> [parent]`, `remove <endpoint>`,
+`set <endpoint> <cluster> <attribute> <value>`, `reachable <endpoint> true|false`, `pairing`
+and `quit`, each answered `ok` or `err <reason>`; every engine event is printed as an
+`event <kind> ...` line. Device types: `on-off-light`, `dimmable-light`, `contact-sensor`,
+`temperature-sensor`. `harness/enginedut.py` sends the commands, waits for the answers and the
+events, and restarts the process on the same state directory. The example prints no secret
+unless asked with `pairing`; the harness never asks, it derives the pairing code itself.
+
+The scenarios run in file order on one engine DUT and one chip-tool fabric; every scenario that
+adds endpoints removes them again, so the conformance scripts at the end see the node as it
+started. chip-tool subscriptions live in an interactive session (`chip-tool interactive start`
+in a long-lived container on the same fabric), because a plain `subscribe` command exits as soon
+as the subscription is established.
+
+| Test | What it proves |
+|---|---|
+| `test_engine_chiptool_commission_and_toggle` | chip-tool commissions the node over IP; a toggle reaches the product as a `CommandInvoked` event (printed by the DUT) and the read-back value flipped |
+| `test_engine_write_accept_and_reject` | a write of `NodeLabel` the product accepts is stored and read back; one it refuses with `ConstraintError` reaches chip-tool as that status and leaves the value |
+| `test_engine_restart_keeps_fabric` | after `quit` and a restart on the same state directory the node reports itself commissioned and chip-tool reads and toggles without commissioning again |
+| `test_engine_subscription_reports_set_attribute` | with chip-tool subscribed to `OnOff` (max interval 10 s), a `set` on the DUT produces a report within 30 s |
+| `test_engine_runtime_added_endpoint_is_served` | an endpoint added while commissioned answers reads, appears in the aggregator's and the root's `PartsList`, and `ConfigurationVersion` increased |
+| `test_engine_wildcard_subscription_sees_added_endpoint` | with a wildcard subscription running, `add` produces a report for the new endpoint |
+| `test_engine_removed_endpoint_is_unsupported` | after `remove`, a read answers `UnsupportedEndpoint`, `PartsList` no longer lists the endpoint, and a subscription to it is told |
+| `test_engine_python_conformance` | `TC_DeviceBasicComposition.py` (with `TC_DESC_2_1` and `TC_DESC_2_2`) and `TC_BRBINFO_2_1.py` run through the framework with `pics/engine-onoff-node.pics`; the first commissions the node as another fabric, the second runs on that fabric; the parsed summaries must show no failure or error, the named cases `PASS`, and every skipped record is listed with the framework's reason |
+
+All eight engine scenarios pass on the runner; none is marked as an expected failure. Two
+findings from the first runs shape how the conformance scenario is arranged:
+
+- **The framework reuses its PASE session.** When the Python framework commissions the node
+  itself and runs the composition script in the same process, its controller keeps using the
+  PASE session (`Using PASE connection`), and `TC_IDM_10_1`'s event subscription over it fails
+  with `Not connected`, because the node has dropped that session by then; the test tolerates
+  the reference SDK's `UnsupportedAccess` on the same session. The scenario therefore
+  commissions with `TC_BRBINFO_2_1` and runs `TC_DeviceBasicComposition` on the established
+  fabric over CASE, where `TC_IDM_10_1` passes.
+- **The framework removes other administrators' fabrics.** At the end of every test the
+  framework's cleanup removes every fabric that was not in the baseline it captured at setup,
+  which after its own commissioning means every other fabric, chip-tool's included (the same
+  happens on the matter.js device after `TC_CGEN_2_1`). The conformance scenario runs last on
+  the engine DUT for that reason; a scenario that needs chip-tool's fabric on this node after a
+  framework run would fail at session setup.
 
 `selftest/` covers the harness without Docker: the manual pairing code against the well-known
 development vector (`20202021`/`3840` gives `34970112332`), redaction and secret capture, process
@@ -114,10 +173,21 @@ scenarios to pass, each found by a red run before it:
 - The matter.js shell is started by its ESM entry point; the package's bin link points to a
   CommonJS build the published tarball does not contain.
 
+**The engine example on the runner:** the job installs the pinned toolchain from
+`rust-toolchain.toml` (rustup is on the image), restores the cargo registry, git and
+`target/release` caches keyed on `Cargo.lock` and the toolchain (the sources as a secondary key),
+builds `onoff_node` with `cargo build --release` and hands its path (`INTEROP_ENGINE_DUT`) and
+the default-route interface (`INTEROP_ENGINE_INTERFACE`) to the harness. The example runs
+natively with host networking next to Avahi; its built-in mDNS responder shares port 5353 through
+address reuse, like the matter.js device.
+
 **Triggers:** pull requests, pushes to every branch, a nightly schedule (03:17 UTC) and manual
-dispatch. One job runs all scenarios in about two minutes, far below the 20-minute limit at
-which the pull-request trigger would keep only the chip-tool scenario and move the rest to the
-schedule.
+dispatch. One job runs both device sets in about 7 minutes without a warm cargo cache (measured
+2026-11-02: 429 s in all, of which the release build of the example takes 186 s, the scenarios
+136 s, the certification image pull 41 s); with the cache restored the build shrinks to the
+changed crates. The step summary prints the build and scenario durations of every run. Were the pull-request trigger to exceed 20 minutes, it would
+keep only the chip-tool scenarios of both devices and move the rest to the schedule; that split
+is not needed.
 
 **Diagnosing a run:** the step "Run the interop scenarios" shows the pytest output (live log
 lines of the harness are redacted like the files). The step "Print the last lines of every
@@ -156,6 +226,11 @@ INTEROP_REQUIRE_DOCKER=1 python -m pytest -v
 # only the self-tests, or only one scenario
 python -m pytest selftest
 INTEROP_REQUIRE_DOCKER=1 python -m pytest scenarios/test_chiptool.py
+
+# the engine example as second device: build it, then name it
+cargo build --release -p matter-rs-engine-rsmatter --example onoff_node
+INTEROP_ENGINE_DUT=../../target/release/examples/onoff_node INTEROP_ENGINE_INTERFACE=eth0 \
+INTEROP_REQUIRE_DOCKER=1 python -m pytest -v
 ```
 
 Without Docker (or without the images) the Docker scenarios are skipped; `INTEROP_REQUIRE_DOCKER=1`
@@ -182,6 +257,10 @@ All settings are environment variables with defaults (`harness/config.py`):
 | `INTEROP_READY_TIMEOUT` | `90` | Seconds to wait for the DUT's ready pattern |
 | `INTEROP_REQUIRE_DOCKER` | unset | `1`: missing Docker or images fail instead of skip |
 | `INTEROP_RUN_ID` | random | Suffix of container and volume names (`interop-<id>-<component>`) |
+| `INTEROP_ENGINE_DUT` | unset | Path of the built `onoff_node` example; without it the engine scenarios skip (fail with `INTEROP_REQUIRE_DOCKER=1`) |
+| `INTEROP_ENGINE_INTERFACE` | unset | Network interface the engine example announces on (`--interface`); the engine chooses one when unset |
+| `INTEROP_ENGINE_DUT_PORT` | `5541` | UDP port of the engine example |
+| `INTEROP_ENGINE_DISCRIMINATOR` | `3841` | Long discriminator of the engine example |
 
 ### Swapping the device under test
 
@@ -203,9 +282,11 @@ goes into `pics/` and is referenced from the Python scenario.
 
 ## Logs and secrets
 
-Every process the harness starts writes to a file under `logs/` (`dut/`, `chip-tool/`,
-`matterjs-shell/`, `python-tc/`, `broken-dut/`), the harness itself to `logs/harness.log`, and
-the workflow adds `logs/pytest.log`. All of it passes through one redactor:
+Every process the harness starts writes to a file under `logs/` (`dut/` for both devices,
+`chip-tool/`, `matterjs-shell/`, `python-tc/`, `broken-dut/`, and for the engine device
+`engine-chip-tool/` with the interactive sessions and `engine-python-tc/`), the harness itself
+to `logs/harness.log`, and the workflow adds `logs/pytest.log`. All of it passes through one
+redactor:
 
 - the configured passcode and the manual pairing code derived from it are masked as `<redacted>`;
 - onboarding payloads (`MT:...`) and any 11- or 21-digit number (the shape of a manual pairing
