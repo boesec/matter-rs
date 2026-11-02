@@ -9,7 +9,12 @@ all-features = true
 # listed in `ignore` with a reason.
 version = 2
 yanked = "deny"
-ignore = []
+ignore = [
+    # `paste` is unmaintained (its author archived it). It is a proc-macro used at compile time
+    # only, by `pinned-init`, a dependency of the pinned rs-matter; nothing of it is linked into
+    # a binary. Revisit with the next rs-matter upgrade.
+    { id = "RUSTSEC-2024-0436", reason = "compile-time proc-macro of a transitive rs-matter dependency; no vulnerability" },
+]
 
 [licenses]
 version = 2
@@ -30,7 +35,14 @@ confidence-threshold = 0.9
 # The allow list is policy, not an inventory: an allowed licence that no dependency uses yet is
 # not worth a warning.
 unused-allowed-license = "allow"
-exceptions = []
+# MPL-2.0 (file-level copyleft) for the parser-combinator helpers of rs-matter's code generator.
+# They run in rs-matter's build script only and are not linked into any binary; the licence
+# therefore places no obligation on this project's code.
+exceptions = [
+    { crate = "nom-supreme", allow = ["MPL-2.0"] },
+    { crate = "brownstone", allow = ["MPL-2.0"] },
+    { crate = "indent_write", allow = ["MPL-2.0"] },
+]
 
 [licenses.private]
 # Our own unpublished workspace crates carry `publish = false` and are checked by their
@@ -47,4 +59,5 @@ highlight = "all"
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+# The Matter engine is pinned to a git revision of rs-matter (see the workspace manifest).
+allow-git = ["https://github.com/project-chip/rs-matter"]

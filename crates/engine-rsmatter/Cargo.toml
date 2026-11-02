@@ -10,7 +10,24 @@ publish = false
 
 [dependencies]
 matter-rs-engine = { workspace = true, features = ["std"] }
+rs-matter = { workspace = true }
+rs-matter-macros = { workspace = true }
+embassy-time = { workspace = true }
+embassy-time-queue-utils = { workspace = true }
+async-io = { workspace = true }
+socket2 = { workspace = true }
+if-addrs = { workspace = true }
+rand = { workspace = true }
+log = { workspace = true }
 thiserror = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+# The facade's `block_on` and fake engine for the tests and the example.
+matter-rs-engine = { workspace = true, features = ["std", "testing"] }
+env_logger = { workspace = true }
+
+[[example]]
+name = "onoff_node"
 
 [lints]
 workspace = true

@@ -230,6 +230,77 @@ fn validate_reports_warnings_and_still_succeeds() {
 }
 
 #[test]
+fn pairing_info_matches_known_vector() {
+    let directory = scratch("pairing-info");
+    let path = directory.join("config.toml");
+    // The test identity of the reference study: passcode 20202021, discriminator 3840, the
+    // default test vendor and product ids.
+    fs::write(&path, "[node]\npasscode = 20202021\ndiscriminator = 3840\n").unwrap();
+
+    let output = run(matter_rs().arg("pairing-info").arg(&path));
+    assert_exit(&output, 0);
+    let stdout = text(&output.stdout);
+    assert!(
+        stdout.contains("manual pairing code: 34970112332"),
+        "{}",
+        describe(&output)
+    );
+    assert!(
+        stdout.contains("discriminator: 3840"),
+        "{}",
+        describe(&output)
+    );
+    assert!(
+        stdout.contains("qr code text: MT:"),
+        "{}",
+        describe(&output)
+    );
+    // The passcode itself is not printed, only the codes derived from it.
+    assert!(!stdout.contains("20202021"), "{}", describe(&output));
+
+    // The file is found like for `validate`, and the same conflict rule applies.
+    let output = run(matter_rs()
+        .arg("pairing-info")
+        .env("MATTER_RS_CONFIG", &path));
+    assert_exit(&output, 0);
+    assert_exit(
+        &run(matter_rs().args(["pairing-info", "a.toml", "--config", "b.toml"])),
+        2,
+    );
+    assert_exit(
+        &run(matter_rs()
+            .arg("pairing-info")
+            .arg(directory.join("missing.toml"))),
+        1,
+    );
+}
+
+#[test]
+fn pairing_info_refuses_an_invalid_file() {
+    let directory = scratch("pairing-info-invalid");
+    let path = directory.join("config.toml");
+    fs::write(&path, "[node]\npasscode = 11111111\ndiscriminator = 3840\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let output = run(matter_rs().arg("pairing-info").arg(&path));
+    assert_exit(&output, 1);
+    assert!(
+        text(&output.stderr).contains("`node.passcode`"),
+        "{}",
+        describe(&output)
+    );
+    assert!(
+        !text(&output.stderr).contains("11111111"),
+        "{}",
+        describe(&output)
+    );
+    assert!(text(&output.stdout).is_empty(), "{}", describe(&output));
+}
+
+#[test]
 fn validate_unreadable_file_exits_1() {
     let directory = scratch("validate-missing");
     let output = validate(&directory.join("missing.toml"));

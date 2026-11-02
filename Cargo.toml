@@ -35,6 +35,26 @@ serde_json = "1.0"
 # Property-based tests of the engine facade (dev-dependency only).
 proptest = "1.6"
 
+# The Matter engine. Pinned to one git revision of rs-matter (0.4.1 plus the unreleased fixes
+# up to that commit, including the Windows UDP fix); `rs-matter-macros` comes from the same
+# revision so that the two never drift apart. The upgrade procedure is in the rustdoc of the
+# `matter-rs-engine-rsmatter` crate. Only that crate may depend on these two.
+rs-matter = { git = "https://github.com/project-chip/rs-matter", rev = "14baec0955483b794680bb0c56bb7f4faa2741dc", default-features = false, features = ["os", "rustcrypto", "log"] }
+rs-matter-macros = { git = "https://github.com/project-chip/rs-matter", rev = "14baec0955483b794680bb0c56bb7f4faa2741dc" }
+# What the rs-matter engine implementation needs around rs-matter: the embassy time driver and
+# timer queue that rs-matter's timers run on under std, the async-io reactor for its UDP
+# sockets, socket2 for the explicit dual-stack bind, if-addrs for interface selection, rand
+# for the crypto back-end, log for the log facade rs-matter writes to, and env_logger for the
+# example binary.
+embassy-time = { version = "0.5", features = ["std"] }
+embassy-time-queue-utils = { version = "0.3", features = ["generic-queue-64"] }
+async-io = "2"
+socket2 = { version = "0.6", features = ["all"] }
+if-addrs = "0.15"
+rand = { version = "0.10", features = ["std", "std_rng", "thread_rng"] }
+log = "0.4"
+env_logger = "0.11"
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
