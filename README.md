@@ -110,6 +110,8 @@ The same checks run locally and in CI: format check, clippy with warnings as err
 `no_std` check above, a build of the binary with its default features and with only the bridge
 role, and a dependency check with [cargo-deny](https://github.com/EmbarkStudios/cargo-deny)
 (licences, advisories, duplicate crates, sources).
+The parsers we write have fuzz targets that run in a separate workflow, briefly on every push and
+for longer every night; see [crates/config/fuzz](crates/config/fuzz/README.md).
 
 ```sh
 cargo install --locked cargo-deny   # once

@@ -1,0 +1,212 @@
+# Continuous fuzzing. Every directory crates/*/fuzz whose Cargo.toml carries
+# `[package.metadata] cargo-fuzz = true` is a fuzz crate and every target that `cargo fuzz list`
+# prints for it is fuzzed, so adding a fuzz crate or a target needs no change here. See
+# crates/config/fuzz/README.md.
+#
+# Pull requests and pushes get a short run (60 s per target) from the saved corpus; the nightly
+# schedule and a manual dispatch get a long one (20 min per target) and grow the corpus the short
+# runs start from.
+name: Fuzz
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # Nightly, 02:47 UTC.
+    - cron: "47 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # libFuzzer needs a nightly compiler for the sanitizer flags. The date is pinned so that a new
+  # nightly cannot turn the job red on its own; raise it deliberately (also changes the cache
+  # keys below). It is installed next to the stable toolchain of rust-toolchain.toml.
+  FUZZ_NIGHTLY: nightly-2026-11-10
+  CARGO_FUZZ_VERSION: 0.13.1
+
+jobs:
+  discover:
+    name: discover fuzz targets
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchains
+        run: |
+          set -euxo pipefail
+          rustup toolchain install
+          rustup toolchain install "$FUZZ_NIGHTLY" --profile minimal
+
+      - name: Restore cargo-fuzz
+        id: cargo-fuzz-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cargo/bin/cargo-fuzz
+          key: cargo-fuzz-${{ runner.os }}-${{ runner.arch }}-${{ env.CARGO_FUZZ_VERSION }}-${{ env.FUZZ_NIGHTLY }}
+
+      - name: Install cargo-fuzz
+        if: steps.cargo-fuzz-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked cargo-fuzz --version "$CARGO_FUZZ_VERSION"
+
+      - name: Save cargo-fuzz
+        if: steps.cargo-fuzz-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cargo/bin/cargo-fuzz
+          key: ${{ steps.cargo-fuzz-cache.outputs.cache-primary-key }}
+
+      # A fuzz crate is a crates/*/fuzz directory whose manifest has `[package.metadata]
+      # cargo-fuzz = true`; its targets are whatever `cargo fuzz list` prints.
+      - name: List fuzz crates and targets
+        id: list
+        run: |
+          set -euo pipefail
+          entries=""
+          for manifest in crates/*/fuzz/Cargo.toml; do
+            [ -f "$manifest" ] || continue
+            if ! python3 -c 'import sys, tomllib; m = tomllib.load(open(sys.argv[1], "rb")); sys.exit(0 if m.get("package", {}).get("metadata", {}).get("cargo-fuzz") is True else 1)' "$manifest"; then
+              echo "skipping $manifest: no cargo-fuzz metadata"
+              continue
+            fi
+            crate_dir=$(dirname "$(dirname "$manifest")")
+            for target in $(cd "$crate_dir" && cargo "+$FUZZ_NIGHTLY" fuzz list); do
+              echo "found $crate_dir fuzz target $target"
+              entries="${entries}{\"dir\":\"${crate_dir}\",\"target\":\"${target}\"},"
+            done
+          done
+          if [ -z "$entries" ]; then
+            echo "::error::no fuzz target found under crates/*/fuzz"
+            exit 1
+          fi
+          matrix="{\"include\":[${entries%,}]}"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Fuzz targets"
+            echo
+            echo '```json'
+            echo "$matrix"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  fuzz:
+    name: fuzz ${{ matrix.dir }} ${{ matrix.target }}
+    needs: discover
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    env:
+      FUZZ_DIR: ${{ matrix.dir }}/fuzz
+      FUZZ_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pick the run length
+        run: |
+          case "$GITHUB_EVENT_NAME" in
+            schedule|workflow_dispatch) seconds=1200 ;;
+            *) seconds=60 ;;
+          esac
+          echo "FUZZ_SECONDS=$seconds" >> "$GITHUB_ENV"
+
+      - name: Install the toolchains
+        run: |
+          set -euxo pipefail
+          rustup toolchain install
+          rustup toolchain install "$FUZZ_NIGHTLY" --profile minimal
+
+      - name: Restore cargo-fuzz
+        id: cargo-fuzz-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cargo/bin/cargo-fuzz
+          key: cargo-fuzz-${{ runner.os }}-${{ runner.arch }}-${{ env.CARGO_FUZZ_VERSION }}-${{ env.FUZZ_NIGHTLY }}
+
+      - name: Install cargo-fuzz
+        if: steps.cargo-fuzz-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked cargo-fuzz --version "$CARGO_FUZZ_VERSION"
+
+      # The corpus is one cache per fuzz crate and target. Every run saves under a key of its own
+      # and restores the newest one, so a run starts from everything found so far. Restore and
+      # save are separate steps: a run that crashes still saves what it found before.
+      - name: Restore the corpus
+        id: corpus-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.FUZZ_DIR }}/corpus/${{ env.FUZZ_TARGET }}
+          key: fuzz-corpus-${{ matrix.dir }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.dir }}-${{ matrix.target }}-
+
+      - name: Fuzz
+        id: fuzz
+        working-directory: ${{ matrix.dir }}
+        run: |
+          set -uo pipefail
+          mkdir -p "fuzz/corpus/$FUZZ_TARGET" "fuzz/artifacts/$FUZZ_TARGET"
+          echo "corpus before: $(find "fuzz/corpus/$FUZZ_TARGET" -type f | wc -l) inputs (cache hit: ${{ steps.corpus-cache.outputs.cache-hit }}, matched key: ${{ steps.corpus-cache.outputs.cache-matched-key || 'none' }})"
+          started=$(date +%s)
+          # -timeout: an input that runs longer than 20 s is a hang and fails the run. -rss_limit_mb
+          # keeps a memory blow-up from taking the runner down.
+          cargo "+$FUZZ_NIGHTLY" fuzz run "$FUZZ_TARGET" -- \
+            -max_total_time="$FUZZ_SECONDS" -timeout=20 -rss_limit_mb=2048 2>&1 | tee "$RUNNER_TEMP/fuzz.log"
+          status=${PIPESTATUS[0]}
+          echo "FUZZ_ELAPSED=$(( $(date +%s) - started ))" >> "$GITHUB_ENV"
+          echo "corpus after: $(find "fuzz/corpus/$FUZZ_TARGET" -type f | wc -l) inputs"
+          exit "$status"
+
+      - name: Save the corpus
+        if: always() && steps.fuzz.conclusion != 'skipped'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.FUZZ_DIR }}/corpus/${{ env.FUZZ_TARGET }}
+          key: ${{ steps.corpus-cache.outputs.cache-primary-key }}
+
+      - name: Write the step summary
+        if: always() && steps.fuzz.conclusion != 'skipped'
+        run: |
+          {
+            echo "## Fuzz ${FUZZ_DIR} ${FUZZ_TARGET}"
+            echo
+            echo "Mode: ${GITHUB_EVENT_NAME} (${FUZZ_SECONDS} s per target); fuzzing took ${FUZZ_ELAPSED:-?} s; result: ${{ steps.fuzz.outcome }}."
+            echo
+            if [ "${{ steps.fuzz.outcome }}" != "success" ]; then
+              echo "Failing input:"
+              echo
+              echo '```'
+              grep -E "Test unit written to|artifact_prefix" "$RUNNER_TEMP/fuzz.log" | tail -n 3 || true
+              find "${FUZZ_DIR}/artifacts/${FUZZ_TARGET}" -type f 2>/dev/null | sort || true
+              echo '```'
+              echo
+              echo "Last lines of the fuzzer output:"
+              echo
+              echo '```'
+              tail -n 25 "$RUNNER_TEMP/fuzz.log" || true
+              echo '```'
+            else
+              echo '```'
+              tail -n 3 "$RUNNER_TEMP/fuzz.log" || true
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The failing input is the reproducer; download it and run `cargo fuzz run <target> <file>`.
+      - name: Upload the crash artefacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ strategy.job-index }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.FUZZ_DIR }}/artifacts/${{ env.FUZZ_TARGET }}
+          retention-days: 14
+          if-no-files-found: warn
