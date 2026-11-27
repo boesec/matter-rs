@@ -93,6 +93,10 @@ impl fmt::Debug for Bridge {
 
 struct Inner {
     node: Arc<dyn Running>,
+    /// The engine the node was started on. Some engines stop their node when they are dropped,
+    /// so it lives as long as the bridge. Declared after `node`, so that the node's handle goes
+    /// first.
+    _engine: Box<dyn Engine>,
     storage: Arc<dyn Storage>,
     state: Lock<State>,
     response_timeout: Duration,
@@ -238,6 +242,7 @@ impl Bridge {
         Ok(Self {
             inner: Arc::new(Inner {
                 node: Arc::from(node),
+                _engine: engine,
                 storage,
                 state: Lock::new(State {
                     devices: BTreeMap::new(),
