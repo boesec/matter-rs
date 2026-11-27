@@ -31,6 +31,8 @@
 //!   again, only if a controller wrote them: without a persisted value the adapter's first value
 //!   stands. The bridge invents no value: every attribute has a default the specification names
 //!   or is required from the adapter.
+//! - Sensors have no commands; a generic switch reports its presses as [`DeviceEvent`]s, which
+//!   become the Switch cluster's events.
 //! - Commands and writes on the extra clusters a part may list reach the adapter as
 //!   [`DeviceCommand::Raw`] and [`DeviceCommand::Write`] with a [`ResponseHandle`]; an answer
 //!   that does not come in time is `Failure`.

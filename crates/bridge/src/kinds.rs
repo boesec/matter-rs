@@ -20,7 +20,7 @@ use matter_rs_engine::{ClusterId, CommandId, DeviceType, EventId, Kind, Value};
 
 use crate::ids::{
     boolean_state, color_control, device_type, identify, illuminance_measurement, level_control,
-    occupancy_sensing, on_off, pressure_measurement, relative_humidity_measurement,
+    occupancy_sensing, on_off, pressure_measurement, relative_humidity_measurement, switch,
     temperature_measurement,
 };
 use crate::model::Attribute;
@@ -40,6 +40,7 @@ use crate::model::Attribute;
 /// | [`PressureSensor`](Self::PressureSensor) | Pressure Sensor `0x0305` rev 3 | Pressure Measurement | `Pressure` |
 /// | [`LightSensor`](Self::LightSensor) | Light Sensor `0x0106` rev 4 | Illuminance Measurement | `Illuminance` |
 /// | [`OccupancySensor`](Self::OccupancySensor) | Occupancy Sensor `0x0107` rev 4 | Occupancy Sensing (Other) | `Occupancy` |
+/// | [`GenericSwitch`](Self::GenericSwitch) | Generic Switch `0x000F` rev 3 | Switch (momentary, release, long press, multi-press) | none |
 ///
 /// Every kind also serves the Identify cluster (`IdentifyTime` 0, `IdentifyType` none), and the
 /// top endpoint of every device carries the Bridged Node device type with the Bridged Device
@@ -70,11 +71,14 @@ pub enum DeviceKind {
     /// An occupancy sensor; its sensing modality is reported as "other" unless the adapter
     /// supplies the sensor type attributes.
     OccupancySensor,
+    /// A momentary switch with two positions that reports presses, long presses and
+    /// multi-presses as events (see [`DeviceEvent`](crate::DeviceEvent)).
+    GenericSwitch,
 }
 
 impl DeviceKind {
     /// Every kind, in the order of the table.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::OnOffLight,
         Self::DimmableLight,
         Self::ColorTemperatureLight,
@@ -86,6 +90,7 @@ impl DeviceKind {
         Self::PressureSensor,
         Self::LightSensor,
         Self::OccupancySensor,
+        Self::GenericSwitch,
     ];
 
     /// The device type and revision of the kind.
@@ -103,6 +108,7 @@ impl DeviceKind {
             Self::PressureSensor => device_type::PRESSURE_SENSOR,
             Self::LightSensor => device_type::LIGHT_SENSOR,
             Self::OccupancySensor => device_type::OCCUPANCY_SENSOR,
+            Self::GenericSwitch => device_type::GENERIC_SWITCH,
         };
         DeviceType { id, revision }
     }
@@ -122,6 +128,7 @@ impl DeviceKind {
             Self::PressureSensor => "pressure-sensor",
             Self::LightSensor => "light-sensor",
             Self::OccupancySensor => "occupancy-sensor",
+            Self::GenericSwitch => "generic-switch",
         }
     }
 
@@ -173,6 +180,7 @@ impl DeviceKind {
             Self::PressureSensor => clusters.push(pressure_cluster()),
             Self::LightSensor => clusters.push(illuminance_cluster()),
             Self::OccupancySensor => clusters.push(occupancy_cluster()),
+            Self::GenericSwitch => clusters.push(switch_cluster()),
         }
         clusters
     }
@@ -796,6 +804,51 @@ fn occupancy_cluster() -> ClusterSpec {
     }
 }
 
+/// The Switch cluster of a momentary switch that reports releases, long presses and
+/// multi-presses. Two positions and a multi-press maximum of two are the smallest values the
+/// cluster allows; an adapter with more overrides them.
+fn switch_cluster() -> ClusterSpec {
+    ClusterSpec {
+        id: switch::CLUSTER,
+        revision: switch::REVISION,
+        feature_map: switch::FEATURE_MOMENTARY
+            | switch::FEATURE_MOMENTARY_RELEASE
+            | switch::FEATURE_MOMENTARY_LONG_PRESS
+            | switch::FEATURE_MOMENTARY_MULTI_PRESS,
+        attributes: vec![
+            AttributeSpec::new(
+                Attribute::NumberOfPositions,
+                Kind::U8,
+                Initial::Default(Value::U8(2)),
+                Access::ReadOnly,
+            )
+            .range(2, 255),
+            AttributeSpec::new(
+                Attribute::CurrentPosition,
+                Kind::U8,
+                Initial::Default(Value::U8(switch::IDLE_POSITION)),
+                Access::ReadOnly,
+            ),
+            AttributeSpec::new(
+                Attribute::MultiPressMax,
+                Kind::U8,
+                Initial::Default(Value::U8(2)),
+                Access::ReadOnly,
+            )
+            .range(2, 255),
+        ],
+        commands: vec![],
+        events: vec![
+            switch::INITIAL_PRESS,
+            switch::LONG_PRESS,
+            switch::SHORT_RELEASE,
+            switch::LONG_RELEASE,
+            switch::MULTI_PRESS_ONGOING,
+            switch::MULTI_PRESS_COMPLETE,
+        ],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
@@ -907,6 +960,7 @@ mod tests {
             DeviceKind::OccupancySensor.required_attributes(),
             vec![Attribute::Occupancy]
         );
+        assert!(DeviceKind::GenericSwitch.required_attributes().is_empty());
     }
 
     #[test]

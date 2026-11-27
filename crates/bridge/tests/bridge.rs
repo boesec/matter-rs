@@ -14,12 +14,12 @@ use std::time::Duration;
 use matter_rs_bridge::ids::{
     boolean_state, bridged_device_basic_information as bdbi, color_control as cc, identify,
     illuminance_measurement, level_control as lc, occupancy_sensing, on_off, pressure_measurement,
-    temperature_measurement,
+    switch, temperature_measurement,
 };
 use matter_rs_bridge::numbering::{AGGREGATOR, MAP_KEY, NEXT_KEY};
 use matter_rs_bridge::{
-    Attribute, Bridge, CommandEvent, DeviceCommand, DeviceHandle, DeviceKey, DeviceKind,
-    DeviceSpec, Error, InitialValues, Options, PartSpec, SemanticTag, Timer,
+    Attribute, Bridge, CommandEvent, DeviceCommand, DeviceEvent, DeviceHandle, DeviceKey,
+    DeviceKind, DeviceSpec, Error, InitialValues, Options, PartSpec, SemanticTag, Timer,
 };
 use matter_rs_engine::testing::{EmittedEvent, FakeEngine, block_on};
 use matter_rs_engine::{
@@ -1803,4 +1803,116 @@ fn bridge_futures_are_send() {
     assert_send(&bridge.remove_device(&key("lamp")));
     assert_send(&bridge.stop());
     block_on(bridge.stop()).unwrap();
+}
+
+#[test]
+fn generic_switch_events() {
+    let harness = Harness::start();
+    let button = harness.add(
+        DeviceSpec::single(key("button"), "Button", DeviceKind::GenericSwitch),
+        InitialValues::new(),
+    );
+    let description = harness.endpoint(2);
+    assert_eq!(
+        description.device_types[0],
+        DeviceKind::GenericSwitch.device_type()
+    );
+    let cluster = description.cluster(switch::CLUSTER).unwrap();
+    assert_eq!(cluster.feature_map, 0x1E);
+    assert_eq!(
+        harness.read(2, Attribute::NumberOfPositions),
+        Some(Value::U8(2))
+    );
+    assert_eq!(
+        harness.read(2, Attribute::CurrentPosition),
+        Some(Value::U8(0))
+    );
+    assert_eq!(
+        harness.read(2, Attribute::MultiPressMax),
+        Some(Value::U8(2))
+    );
+
+    // A short press, a long press and a double press, as the adapter sees them.
+    let presses = [
+        DeviceEvent::InitialPress { position: 1 },
+        DeviceEvent::ShortRelease {
+            previous_position: 1,
+        },
+        DeviceEvent::InitialPress { position: 1 },
+        DeviceEvent::LongPress { position: 1 },
+        DeviceEvent::LongRelease {
+            previous_position: 1,
+        },
+        DeviceEvent::InitialPress { position: 1 },
+        DeviceEvent::ShortRelease {
+            previous_position: 1,
+        },
+        DeviceEvent::InitialPress { position: 1 },
+        DeviceEvent::MultiPressOngoing {
+            position: 1,
+            count: 2,
+        },
+        DeviceEvent::ShortRelease {
+            previous_position: 1,
+        },
+        DeviceEvent::MultiPressComplete {
+            previous_position: 1,
+            count: 2,
+        },
+    ];
+    let mut positions = Vec::new();
+    for press in presses {
+        block_on(button.emit(0, press)).unwrap();
+        positions.push(harness.read(2, Attribute::CurrentPosition).unwrap());
+    }
+    // `CurrentPosition` follows: pressed while held, idle after every release.
+    assert_eq!(
+        positions,
+        [1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 0].map(Value::U8).to_vec()
+    );
+    // The events reach the engine in order with the Switch cluster's fields.
+    let events: Vec<(matter_rs_engine::EventId, Value)> = harness
+        .fake
+        .event_log()
+        .into_iter()
+        .map(|e| {
+            assert_eq!(e.endpoint, ep(2));
+            assert_eq!(e.cluster, switch::CLUSTER);
+            (e.event, e.payload)
+        })
+        .collect();
+    let position = |p: u8| Value::Struct(vec![(0, Value::U8(p))]);
+    let counted = |p: u8, n: u8| Value::Struct(vec![(0, Value::U8(p)), (1, Value::U8(n))]);
+    assert_eq!(
+        events,
+        vec![
+            (switch::INITIAL_PRESS, position(1)),
+            (switch::SHORT_RELEASE, position(1)),
+            (switch::INITIAL_PRESS, position(1)),
+            (switch::LONG_PRESS, position(1)),
+            (switch::LONG_RELEASE, position(1)),
+            (switch::INITIAL_PRESS, position(1)),
+            (switch::SHORT_RELEASE, position(1)),
+            (switch::INITIAL_PRESS, position(1)),
+            (switch::MULTI_PRESS_ONGOING, counted(1, 2)),
+            (switch::SHORT_RELEASE, position(1)),
+            (switch::MULTI_PRESS_COMPLETE, counted(1, 2)),
+        ]
+    );
+    // A raw event of an unlisted cluster is refused; a switch event on a light as well.
+    assert_eq!(
+        block_on(button.emit(
+            0,
+            DeviceEvent::Raw {
+                cluster: on_off::CLUSTER,
+                event: matter_rs_engine::EventId::new(0),
+                payload: Value::Null,
+            }
+        )),
+        Err(Error::UnsupportedEvent {
+            key: key("button"),
+            part: 0
+        })
+    );
+    harness.stop();
 }
