@@ -92,7 +92,7 @@ def test_service_commission_restart_keeps_fabric(service_dut: ServiceDut, servic
     """chip-tool commissions the service; after SIGTERM and a restart it reads without commissioning again."""
     first = service_dut.running()
     first.expect_pattern(r"node is running .*commissioned=false")
-    first.expect_pattern(r"matter-rs pairing-info")
+    first.wait_for(r"matter-rs pairing-info", 30.0)
 
     service_chiptool.pair(SERVICE_CHIPTOOL_NODE_ID)
     # The bridge runs without adapters: the aggregator lists no bridged device.
