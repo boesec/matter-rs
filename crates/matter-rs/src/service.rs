@@ -10,9 +10,10 @@
 //!    supervisor);
 //! 5. pulls the bridge's events in one task, logs the node's lifecycle and hands device commands
 //!    to the adapters;
-//! 6. waits for a stop signal, then stops the adapters, the bridge and the engine in that order.
-//!    The engine flushes its deferred persistence before its thread ends, and the service waits
-//!    for that thread, so the state directory is complete when the process exits.
+//! 6. waits for a stop signal, then stops the adapters and the bridge, in that order, and drops
+//!    the bridge, which owns the engine. The engine flushes its deferred persistence before its
+//!    thread ends, and the drop waits for that thread, so the state directory is complete when
+//!    the process exits.
 //!
 //! A second stop signal during the shutdown ends the process at once with exit code 1, as does a
 //! shutdown that takes longer than [`SHUTDOWN_TIMEOUT`].
@@ -26,8 +27,8 @@ use std::time::Duration;
 
 use matter_rs_config::{AdapterConfig, Config, Error as ConfigError, SystemEnvironment, load};
 use matter_rs_engine::{
-    Attestation, BoxFuture, Capabilities, DirectoryStorage, Engine, NetworkConfig, NodeIdentity,
-    NodeRole, ProductId, Running, StopReason, Storage, VendorId,
+    Attestation, DirectoryStorage, NetworkConfig, NodeIdentity, ProductId, StopReason, Storage,
+    VendorId,
 };
 use matter_rs_engine_rsmatter::RsMatterEngine;
 use tracing::{debug, error, info, warn};
@@ -102,7 +103,7 @@ pub(crate) fn run(path: &Path) -> ExitCode {
         }
     };
     let outcome = runtime.block_on(serve(loaded.config));
-    // The engine thread has been joined inside `serve`; nothing that still runs on the runtime
+    // The engine thread has been joined inside `serve` (through the bridge's drop); nothing that still runs on the runtime
     // holds state that must reach the disk.
     runtime.shutdown_timeout(Duration::from_secs(1));
     match outcome {
@@ -185,28 +186,6 @@ pub(crate) fn unique_id(storage: &dyn Storage) -> Result<String, StartError> {
         .store(UNIQUE_ID_KEY, id.as_bytes())
         .map_err(|error| StartError::new("cannot store the unique id", &error))?;
     Ok(id)
-}
-
-/// The engine, shared between the bridge (which takes a boxed engine and drops it after the
-/// start) and the service (which keeps it until the end): dropping the rs-matter engine stops
-/// its node and joins its thread, which must happen only after the bridge has stopped.
-struct SharedEngine(Arc<RsMatterEngine>);
-
-impl Engine for SharedEngine {
-    fn start(
-        &self,
-        identity: NodeIdentity,
-        network: NetworkConfig,
-        attestation: Attestation,
-        role: NodeRole,
-        storage: Arc<dyn Storage>,
-    ) -> BoxFuture<'_, Result<Box<dyn Running>, matter_rs_engine::Error>> {
-        self.0.start(identity, network, attestation, role, storage)
-    }
-
-    fn capabilities(&self) -> Capabilities {
-        Engine::capabilities(&*self.0)
-    }
 }
 
 /// The adapters running on the bridge.
@@ -296,10 +275,8 @@ async fn serve_bridge(config: Config, mut signals: StopSignals) -> Result<(), St
     let identity = identity(&config, unique_id(&*storage)?);
     let network = network(&config);
     let port = network.port;
-    let engine = Arc::new(RsMatterEngine::new());
-
     let bridge = Bridge::start(
-        Box::new(SharedEngine(Arc::clone(&engine))),
+        Box::new(RsMatterEngine::new()),
         identity,
         network,
         Attestation::Test,
@@ -309,18 +286,14 @@ async fn serve_bridge(config: Config, mut signals: StopSignals) -> Result<(), St
     .map_err(|error| StartError::new("the node did not start", &error));
     let bridge = match bridge {
         Ok(bridge) => Arc::new(bridge),
-        Err(error) => {
-            join_engine(engine).await;
-            return Err(error);
-        }
+        Err(error) => return Err(error),
     };
 
     let adapters = match start_adapters(&bridge, &config.adapters).await {
         Ok(adapters) => Arc::new(adapters),
         Err(error) => {
             let _ = bridge.stop().await;
-            drop(bridge);
-            join_engine(engine).await;
+            drop_bridge(bridge).await;
             return Err(error);
         }
     };
@@ -354,8 +327,7 @@ async fn serve_bridge(config: Config, mut signals: StopSignals) -> Result<(), St
                 Ok(other) => format!("{other:?}"),
                 Err(error) => format!("the event task ended: {error}"),
             };
-            drop(bridge);
-            join_engine(engine).await;
+            drop_bridge(bridge).await;
             return Err(StartError(format!("the node stopped unexpectedly: {reason}")));
         }
     };
@@ -380,8 +352,7 @@ async fn serve_bridge(config: Config, mut signals: StopSignals) -> Result<(), St
             Ok(reason) => debug!(?reason, "event stream ended"),
             Err(error) => warn!(%error, "the event task failed"),
         }
-        drop(bridge);
-        join_engine(engine).await;
+        drop_bridge(bridge).await;
     };
     tokio::time::timeout(SHUTDOWN_TIMEOUT, shutdown)
         .await
@@ -393,10 +364,12 @@ async fn serve_bridge(config: Config, mut signals: StopSignals) -> Result<(), St
         })
 }
 
-/// Drops the last reference to the engine on a blocking thread: the drop stops a node that
-/// still runs and joins the engine thread after its persistence has flushed.
-async fn join_engine(engine: Arc<RsMatterEngine>) {
-    if let Err(error) = tokio::task::spawn_blocking(move || drop(engine)).await {
+/// Drops the last reference to the bridge on a blocking thread. The bridge owns the engine, and
+/// dropping the rs-matter engine stops a node that still runs and joins the engine thread after
+/// its persistence has flushed; the service waits for that before it exits.
+#[cfg(feature = "role-bridge")]
+async fn drop_bridge(bridge: Arc<Bridge>) {
+    if let Err(error) = tokio::task::spawn_blocking(move || drop(bridge)).await {
         warn!(%error, "joining the engine thread failed");
     }
 }
