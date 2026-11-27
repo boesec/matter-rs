@@ -34,6 +34,10 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # Property-based tests of the engine facade (dev-dependency only).
 proptest = "1.6"
+# The `no_std` lock of the bridge role: a critical-section mutex the embedded target implements;
+# the std build enables its `std` implementation. Already in the dependency graph through
+# rs-matter.
+critical-section = { version = "1.2", default-features = false }
 
 # The Matter engine. Pinned to one git revision of rs-matter: `af3e49a` of 2026-11-26 (0.4.1
 # plus the unreleased changes up to that commit, among them the split into `rs-matter-*` micro

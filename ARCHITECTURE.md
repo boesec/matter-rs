@@ -34,7 +34,7 @@ lower layers (section 3).
 |---|---|---|---|---|---|
 | `matter-rs-engine` | `crates/engine` | 0 engine facade | yes | Engine-neutral contract: ids, dynamic values, endpoint descriptions, events, storage contract, errors, `Secret<T>`; fake engine behind the `testing` feature | contract in place; the controller extension follows |
 | `matter-rs-engine-rsmatter` | `crates/engine-rsmatter` | 1 engine implementation | no | The only crate that depends on rs-matter; runs it on a dedicated thread | engine in place: node bring-up, dual-stack socket, built-in mDNS, storage over the facade, endpoints and values, commissioning and fabrics, pairing info; dynamic endpoints as far as the pinned revision allows (see its rustdoc) |
-| `matter-rs-bridge` | `crates/bridge` | 2 role | yes | Aggregator, bridged devices, endpoint numbering, device types | skeleton; filled by the bridge role |
+| `matter-rs-bridge` | `crates/bridge` | 2 role | yes | Aggregator, bridged devices, endpoint numbering, device types | bridge role in place: stable endpoint numbering, composed devices, Bridged Device Basic Information, lights, plug and sensors with pass-through cluster semantics, typed device API; the remaining device kinds follow |
 | `matter-rs-controller` | `crates/controller` | 2 role | yes | Controller role: commission and control devices | planned (release 2) |
 | `matter-rs-adapter-api` | `crates/adapter-api` | 3 adapter contract | yes | Trait and types every adapter implements | skeleton; filled by the adapter model |
 | `matter-rs-adapter-mqtt` | `crates/adapter-mqtt` | 4 adapter | no | MQTT adapter along mqtt-smarthome | skeleton; filled by the MQTT adapter |

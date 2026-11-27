@@ -10,12 +10,21 @@ publish = false
 
 [features]
 default = ["std"]
-# Links the standard library. Without it the crate is `no_std` and relies on `alloc` only.
-std = ["matter-rs-engine/std", "thiserror/std"]
+# Links the standard library. Without it the crate is `no_std` and relies on `alloc` only. The
+# feature also selects the standard-library mutex for the bridge's shared state (the `no_std`
+# build uses a critical section instead) and enables the thread-based default timer.
+std = ["matter-rs-engine/std", "thiserror/std", "critical-section/std"]
 
 [dependencies]
 matter-rs-engine = { workspace = true }
 thiserror = { workspace = true }
+# The lock of the bridge's shared state on the `no_std` tier: a critical-section mutex, whose
+# implementation the embedded target links in. Under `std` the standard mutex is used instead.
+critical-section = { workspace = true }
+
+[dev-dependencies]
+matter-rs-engine = { workspace = true, features = ["testing"] }
+proptest = { workspace = true }
 
 [lints]
 workspace = true
