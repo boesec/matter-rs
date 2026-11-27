@@ -33,37 +33,89 @@
 //! # The rs-matter pin and how to upgrade it
 //!
 //! The workspace manifest pins `rs-matter` and `rs-matter-macros` to one git revision of
-//! <https://github.com/project-chip/rs-matter> (0.4.1 plus the unreleased fixes up to that
-//! commit, among them the Windows UDP fix). The default features `os`, `rustcrypto` and `log`
-//! are enabled and nothing else: in particular not `send-sync`, which upstream marks as work in
-//! progress, and not `groups` or `persistent-subscriptions`. `cargo deny` allows that git
-//! source.
+//! <https://github.com/project-chip/rs-matter>: `af3e49ac71c778f62a466c272535d2bbf4d301fb` of
+//! 2026-11-26, which is 0.4.1 plus the unreleased changes up to that commit. Since the split of
+//! rs-matter into micro crates (`rs-matter-tlv`, `rs-matter-dm-core`, `rs-matter-im`,
+//! `rs-matter-node`, `rs-matter-stack` and the others), the `rs-matter` crate is a facade that
+//! re-exports them under the paths this crate has always used; the micro crates are not named
+//! in any manifest of this workspace and follow the `rs-matter` entry of the lockfile, so they
+//! can never be at another revision. The default features `os`, `rustcrypto` and `log` are
+//! enabled and nothing else: in particular not `send-sync`, which upstream marks as work in
+//! progress, and not `groups`, `persistent-subscriptions` or a `large-buffers-*` feature.
+//! `cargo deny` allows that git source.
 //!
 //! To upgrade:
 //!
 //! 1. Read upstream's `CHANGELOG.md` from the pinned revision to the new one and note every
 //!    line marked breaking; the APIs this crate uses are listed under "What this crate uses"
-//!    below.
+//!    below. Read the description of every pull request that moves code as well.
 //! 2. Change the `rev` of both crates in the workspace manifest and run `cargo update -p
-//!    rs-matter -p rs-matter-macros` (or delete their lockfile entries and let cargo resolve).
+//!    rs-matter -p rs-matter-macros`: the lockfile entries of the micro crates follow (or
+//!    delete every `rs-matter*` lockfile entry and let cargo resolve).
 //! 3. Run the quality gate (`scripts/check.ps1` or `scripts/check.sh`): the unit tests of this
 //!    crate pin the TLV mapping, the metadata shapes and the pairing codes; the contract tests
-//!    start real nodes.
+//!    start real nodes. `cargo deny check` reports a new licence or advisory, which is a
+//!    decision of the project owner, never a silent exception.
 //! 4. Run the local interop scenario (`tests/interop-local/`) against the matter.js shell on
-//!    Windows and Linux.
-//! 5. Switch to a crates.io release when one appears that contains what the pin was chosen
+//!    Windows and Linux, and the interop harness with the engine example as the device under
+//!    test on CI.
+//! 5. Audit rs-matter's log statements at the new revision for the passcode, the pairing code
+//!    and the QR text (see "Secrets" below) and extend the list of upgrades below.
+//! 6. Switch to a crates.io release when one appears that contains what the pin was chosen
 //!    for.
 //!
-//! What this crate uses of rs-matter: `Matter` (construction, startup, factory reset, the
-//! commissioning window, `comm_window_state`, `has_fabrics`, `mdns_services`, `with_state` for
-//! the fabric table), `InteractionModel` (construction, startup, factory reset, `run`,
+//! What this crate uses of rs-matter: `Matter` (construction with a `DevCommData`, startup,
+//! factory reset, `remove_fabric`, the commissioning window, `comm_window_state`,
+//! `has_fabrics`, `mdns_services`, `with_state` for the fabric table), `InteractionModel`
+//! (construction over a `ByteBuffers` pool, startup, factory reset, `run`,
 //! `open_basic_comm_window`, `close_comm_window`, `bump_configuration_version`,
-//! `emit_shut_down`, the `AttrChangeNotifier`, `EventEmitter` and `HandlerContext` traits),
-//! `DefaultResponder`, the `AsyncHandler`, `Metadata`, `Node`, `Endpoint` and `Cluster` types
-//! with the generated `FULL_CLUSTER` constants, `EthSysHandlerBuilder` and `root_endpoint!`,
-//! `KvBlobStore`, `FabricPersist`, the TLV reader and writer, `BasicCommData`'s pairing code
-//! and `QrPayload`, `DeviceAttestation` and the test credentials, `BuiltinMdns` and the
-//! async-io UDP adapter.
+//! `emit_shut_down`, `notify_endpoint_changed`, the `AttrChangeNotifier`, `EventEmitter` and
+//! `HandlerContext` traits), `MatterBuffers`, `DefaultResponder`, the `AsyncHandler`,
+//! `Metadata`, `Node`, `Endpoint` and `Cluster` types with the generated `FULL_CLUSTER`
+//! constants, `EthSysHandlerBuilder` and `root_endpoint!`, `KvBlobStore`, the TLV reader and
+//! writer with their `TlvError`, `BasicCommData`'s pairing code and `QrPayload`,
+//! `DeviceAttestation` and the test credentials, `BuiltinMdns` and the async-io UDP adapter;
+//! the contract tests also use `FabricPersist`, the certificate generators of `onboard` and
+//! the test-only crypto to mint a fabric into the storage.
+//!
+//! ## Upgrades so far
+//!
+//! **`14baec0` (2026-10-31) to `af3e49a` (2026-11-26).** 43 upstream commits. The breaking
+//! changes this crate met, and what was done about them:
+//!
+//! - The crate split (upstream #634, #636): every path this crate uses still resolves through
+//!   the `rs-matter` facade; nothing was renamed here. `EVENT_DATA_TAG` moved from
+//!   `im::events` to `dm`, `MatterBuffers` from `transport::exchange` to `transport`.
+//! - The system cluster handlers take the `Matter` when built (#634):
+//!   `EthSysHandlerBuilder::build(&matter, rand)`.
+//! - `QrPayload::new_from_basic_info` is gone (#634); `QrPayload::new` takes the vendor and
+//!   product ids and the serial number directly, which is what the pairing code computation
+//!   does now.
+//! - `Matter::new` takes a `DevCommData` (#659): the passcode is wrapped as
+//!   `DevCommData::Passcode` at the one place the commissioning data is built. The verifier
+//!   variant, for devices whose passcode stays at the factory, is not used; the facade has no
+//!   way to express it.
+//! - The Interaction Model takes a `ByteBuffers` pool instead of `Buffers<IMBuffer>` (#678);
+//!   `MatterBuffers` implements it, with 9 UDP-sized buffers by default and no large ones
+//!   because no `large-buffers-*` feature is enabled.
+//! - The TLV crate reports its own `TlvError` (#679): the `ToTLV` implementation and the TLV
+//!   write helpers of this crate return it, and the places that answer rs-matter's global
+//!   error convert it with `?` or `map_err`.
+//! - `Matter::remove_fabric` is public (#681) and replaces the hand-rolled removal this crate
+//!   had: it removes the fabric's sessions and persisted record, withdraws the operational mDNS
+//!   record, drops a trusted root staged in the fail-safe and emits the `Leave` event, so the
+//!   former limit that the mDNS record stayed until the next change is gone.
+//!
+//! Behaviour that changed underneath without a code change here: an empty `unique_id` makes
+//! rs-matter serve a random, persisted one (#669); the default `MaxPathsPerInvoke` is 1 again
+//! (#690); the max interval granted to a subscription is capped at 120 s by default (#642);
+//! opening a commissioning window fails with `Busy` while the fail-safe is armed (#690); on
+//! Windows the UDP adapter ignores the connection reset a receive reports after a send to a
+//! closed port (#635); session state is one enum with a `Defunct` state (#648); an ICD in LIT
+//! mode advertises no session idle interval (#644, not relevant to this always-on node). The
+//! `paste` advisory ignore and the MPL-2.0 exceptions of `deny.toml` are still needed at this
+//! revision: `pinned-init` still depends on `paste`, and the code generator still on
+//! `nom-supreme`.
 //!
 //! # Node bring-up
 //!
@@ -171,19 +223,16 @@
 //!   not be described, the engine serves it.
 //! - Writes of single list elements (chunked list writes) are refused with `InvalidAction`;
 //!   whole-list writes reach the product.
-//! - [`Running::remove_fabric`] removes the fabric, its sessions and its persisted record the
-//!   way rs-matter's `RemoveFabric` command does, but cannot withdraw the fabric's mDNS record
-//!   until the next mDNS change (the notification is not public in rs-matter).
 //! - The capabilities are compile-time: 5 fabrics, 15 subscriptions, and the endpoint capacity
 //!   of this engine ([`DEFAULT_ENDPOINT_CAPACITY`], configurable).
 //!
 //! # Secrets
 //!
 //! No log line of this crate contains the passcode, the pairing code or key material. rs-matter's
-//! log statements were audited at the pinned revision: the only ones that print the pairing
-//! code or the QR text are `Matter::print_standard_qr_text`, `print_standard_qr_code` and
-//! `print_standard_nfc_ndef`, which this crate never calls; the commissioning data's `Debug`
-//! output is rs-matter's redacting `CryptoSensitive` wrapper. [`Running::pairing_info`] and
+//! log statements are audited at every pinned revision (last at `af3e49a`): the only ones that
+//! print the pairing code or the QR text are `Matter::print_standard_qr_text`,
+//! `print_standard_qr_code` and `print_standard_nfc_ndef`, which this crate never calls; the
+//! commissioning data's `Debug` output is rs-matter's redacting `CryptoSensitive` wrapper. [`Running::pairing_info`] and
 //! [`pairing_info_for`] compute the codes with rs-matter's own payload and manual-code
 //! functions and return them as [`Secret`]s; the `pairing-info` command of the service binary
 //! is the one place that shows them.
