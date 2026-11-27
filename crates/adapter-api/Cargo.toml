@@ -1,6 +1,6 @@
 [package]
 name = "matter-rs-adapter-api"
-description = "Adapter contract of matter-rs: the trait and types every adapter implements."
+description = "Adapter contract of matter-rs: the trait and types every adapter implements, and the supervisor that runs adapters."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,16 +10,49 @@ publish = false
 
 [features]
 default = ["std"]
-# Links the standard library. Without it the crate is `no_std` and relies on `alloc` only.
-std = ["matter-rs-engine/std", "matter-rs-bridge?/std", "thiserror/std"]
-# The part of the contract that adapters use to feed a bridge. Selected by the binary's
+# Links the standard library. Without it the crate is `no_std` and relies on `alloc` only: the
+# contract (trait, context, ids, health, errors) is all there is. With it the crate adds the
+# factory trait (serde and schemars for the adapter's config type) and, together with
+# `role-bridge`, the supervisor that runs adapters on tokio.
+std = [
+    "matter-rs-engine/std",
+    "matter-rs-bridge?/std",
+    "thiserror/std",
+    "critical-section/std",
+    "dep:log",
+    "dep:serde",
+    "dep:schemars",
+    "dep:tokio",
+]
+# The part of the contract that adapters use to feed a bridge: the device registrar and the
+# command stream of the context, and the supervisor under `std`. Selected by the binary's
 # `role-bridge` feature.
 role-bridge = ["dep:matter-rs-bridge"]
+# The mock adapter for tests of the supervisor and of adapter wiring; needs the bridge role.
+testing = ["std", "role-bridge"]
 
 [dependencies]
 matter-rs-engine = { workspace = true }
 matter-rs-bridge = { workspace = true, optional = true }
 thiserror = { workspace = true }
+# The lock of the context's shared state on the `no_std` tier, as in the bridge role: a
+# critical-section mutex whose implementation the embedded target links in; under `std` the
+# standard mutex is used instead.
+critical-section = { workspace = true }
+log = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+schemars = { workspace = true, optional = true }
+# The supervisor spawns one task per adapter and measures backoff and stop timeouts; the
+# synchronisation primitives (`sync`) work on any executor and are also used by the mock adapter.
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"], optional = true }
+
+[dev-dependencies]
+matter-rs-engine = { workspace = true, features = ["std", "testing"] }
+# `test-util` pauses the clock in the supervisor tests, so backoff and timeouts take no real time.
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "test-util"] }
+serde_json = { workspace = true }
+# The author guide's examples parse their configuration sections from TOML.
+toml = { workspace = true }
 
 [lints]
 workspace = true
