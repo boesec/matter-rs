@@ -1196,7 +1196,9 @@ dependencies = [
 name = "matter-rs-bridge"
 version = "0.0.0"
 dependencies = [
+ "critical-section",
  "matter-rs-engine",
+ "proptest",
  "thiserror",
 ]
 
