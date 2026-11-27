@@ -3,8 +3,10 @@
 //! The bridge is driven from two sides at once: the task that pulls events from the engine and
 //! the adapter tasks that set values through device handles. Both need the device model, so it
 //! sits behind a lock that is held only for the duration of a closure and never across an await.
-//! Under `std` the lock is the standard mutex; on the `no_std` tier it is a critical-section
-//! mutex, whose implementation the embedded target provides.
+//! The bridge's own storage writes (numbering, persisted attribute values) happen under the lock
+//! as well, so that two changes cannot overwrite each other's entries. Under `std` the lock is
+//! the standard mutex; on the `no_std` tier it is a critical-section mutex, whose implementation
+//! the embedded target provides.
 
 use core::fmt;
 

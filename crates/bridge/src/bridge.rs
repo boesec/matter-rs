@@ -274,7 +274,7 @@ impl Bridge {
     ) -> Result<DeviceHandle, Error> {
         let inner = &self.inner;
         let key = spec.key.clone();
-        let (numbers, map, next) = inner.state.with(|state| {
+        let numbers = inner.state.with(|state| {
             if state.devices.contains_key(&key) {
                 return Err(Error::DuplicateDevice(key.clone()));
             }
@@ -291,14 +291,9 @@ impl Bridge {
                 })?;
                 parts.push(state.numbering.assign(Slot::part(&key, part))?);
             }
-            Ok((
-                Numbers { parent, parts },
-                state.numbering.encode_map(),
-                state.numbering.encode_next(),
-            ))
+            inner.persist_numbering(state)?;
+            Ok(Numbers { parent, parts })
         })?;
-        inner.storage.store(MAP_KEY, &map)?;
-        inner.storage.store(NEXT_KEY, &next)?;
 
         let persisted = load_persisted(&*inner.storage, &key)?;
         let lookup = |slot: u16, attribute: Attribute| {
@@ -395,14 +390,12 @@ impl Bridge {
             Ok(()) | Err(Error::UnknownDevice(_)) => {}
             Err(error) => return Err(error),
         }
-        let (map, next) = self.inner.state.with(|state| {
+        self.inner.state.with(|state| {
             state.numbering.forget(key);
-            (state.numbering.encode_map(), state.numbering.encode_next())
-        });
-        self.inner.storage.store(MAP_KEY, &map)?;
-        self.inner.storage.store(NEXT_KEY, &next)?;
-        self.inner.storage.remove(&attributes_key(key))?;
-        Ok(())
+            self.inner.persist_numbering(state)?;
+            self.inner.storage.remove(&attributes_key(key))?;
+            Ok(())
+        })
     }
 
     /// A handle for an added device.
@@ -610,26 +603,18 @@ impl Bridge {
     /// The engine's errors, wrapped; [`Error::Storage`] when the storage fails.
     pub async fn factory_reset(&self) -> Result<(), Error> {
         self.inner.node.factory_reset().await?;
-        let (keys, map, next) = self.inner.state.with(|state| {
+        self.inner.state.with(|state| {
             let live: Vec<DeviceKey> = state.devices.keys().cloned().collect();
             let forgotten = state.numbering.retain(&live);
             for device in state.devices.values_mut() {
                 device.persisted.clear();
             }
-            let mut keys = live;
-            keys.extend(forgotten);
-            (
-                keys,
-                state.numbering.encode_map(),
-                state.numbering.encode_next(),
-            )
-        });
-        self.inner.storage.store(MAP_KEY, &map)?;
-        self.inner.storage.store(NEXT_KEY, &next)?;
-        for key in keys {
-            self.inner.storage.remove(&attributes_key(&key))?;
-        }
-        Ok(())
+            self.inner.persist_numbering(state)?;
+            for key in live.iter().chain(&forgotten) {
+                self.inner.storage.remove(&attributes_key(key))?;
+            }
+            Ok(())
+        })
     }
 
     /// The limits of the engine.
@@ -881,6 +866,15 @@ impl Inner {
         })
     }
 
+    /// Writes the numbering to the storage. Called with the state locked, so that two changes
+    /// cannot overwrite each other's entries.
+    fn persist_numbering(&self, state: &State) -> Result<(), Error> {
+        self.storage.store(MAP_KEY, &state.numbering.encode_map())?;
+        self.storage
+            .store(NEXT_KEY, &state.numbering.encode_next())?;
+        Ok(())
+    }
+
     /// Persists a written value in the device's entry.
     fn persist(
         &self,
@@ -890,17 +884,17 @@ impl Inner {
         attribute: AttributeId,
         value: &Value,
     ) -> Result<(), Error> {
-        let encoded = self.state.with(|state| {
-            let device = state.devices.get_mut(key)?;
+        self.state.with(|state| {
+            let Some(device) = state.devices.get_mut(key) else {
+                return Ok(());
+            };
             device
                 .persisted
                 .insert((slot_part, cluster, attribute), value.clone());
-            Some(encode_persisted(&device.persisted))
-        });
-        if let Some(encoded) = encoded {
+            let encoded = encode_persisted(&device.persisted);
             self.storage.store(&attributes_key(key), &encoded)?;
-        }
-        Ok(())
+            Ok(())
+        })
     }
 }
 

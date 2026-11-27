@@ -359,6 +359,43 @@ fn numbering_forget_releases() {
 }
 
 #[test]
+fn concurrent_adds_are_all_persisted() {
+    let storage = Arc::new(MemoryStorage::new());
+    let harness = Harness::start_on(Arc::clone(&storage), Options::default());
+    let adders: Vec<JoinHandle<EndpointId>> = (0..8)
+        .map(|i| {
+            let bridge = Arc::clone(&harness.bridge);
+            thread::spawn(move || {
+                let name = format!("lamp-{i}");
+                let handle = block_on(bridge.add_device(
+                    DeviceSpec::single(key(&name), &name, DeviceKind::OnOffLight),
+                    InitialValues::new().value(Attribute::OnOff, false),
+                ))
+                .unwrap();
+                handle.endpoints().unwrap()[0].endpoint
+            })
+        })
+        .collect();
+    let mut numbers: Vec<u16> = adders
+        .into_iter()
+        .map(|adder| adder.join().unwrap().raw())
+        .collect();
+    numbers.sort_unstable();
+    assert_eq!(numbers, (2..10).collect::<Vec<u16>>());
+    harness.stop();
+    // Every number is in the persisted map: a new bridge gives each key its number back.
+    let second = Harness::start_on(storage, Options::default());
+    assert_eq!(second.bridge.reserved_endpoints().len(), 8);
+    for i in (0..8).rev() {
+        let name = format!("lamp-{i}");
+        let handle = second.on_off_light(&name, false);
+        assert!(numbers.contains(&handle.endpoints().unwrap()[0].endpoint.raw()));
+    }
+    assert_eq!(second.bridge.reserved_endpoints().len(), 8);
+    second.stop();
+}
+
+#[test]
 fn numbering_lives_under_bridge_endpoints() {
     let harness = Harness::start();
     harness.on_off_light("a", false);
