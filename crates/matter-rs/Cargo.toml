@@ -38,7 +38,7 @@ matter-rs-adapter-mqtt = { workspace = true, optional = true }
 matter-rs-config = { workspace = true }
 clap = { workspace = true }
 getrandom = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "signal", "macros", "sync", "time"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-log = { workspace = true }
