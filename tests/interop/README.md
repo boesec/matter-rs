@@ -83,17 +83,20 @@ that builds on it reports that same error.
 (5541) and discriminator `INTEROP_ENGINE_DISCRIMINATOR` (3841), with the same passcode as the
 matter.js light. The example starts with its aggregator at endpoint 1 and one on/off light at
 endpoint 2 and takes a line protocol on standard input (documented in full in the example's
-source): `add <endpoint> <device-type> [parent]`, `remove <endpoint>`,
+source): `add <endpoint> <device-type> [parent=<endpoint>] [tag=<namespace>:<tag>[:<label>]]...`
+(a part of a composed device under `parent`, with semantic tags of a standard namespace in its
+Descriptor `TagList`), `remove <endpoint>`,
 `set <endpoint> <cluster> <attribute> <value>`, `reachable <endpoint> true|false`, `pairing`
 and `quit`, each answered `ok` or `err <reason>`; every engine event is printed as an
 `event <kind> ...` line. Device types: `on-off-light`, `dimmable-light`, `contact-sensor`,
-`temperature-sensor`. `harness/enginedut.py` sends the commands, waits for the answers and the
+`temperature-sensor` and `bridged-node` (Bridged Node with Bridged Device Basic Information
+only, the parent of a composed device; its parts carry only their own device type). `harness/enginedut.py` sends the commands, waits for the answers and the
 events, and restarts the process on the same state directory. The example prints no secret
 unless asked with `pairing`; the harness never asks, it derives the pairing code itself.
 
 The scenarios run in file order on one engine DUT and one chip-tool fabric; every scenario that
-adds endpoints removes them again, so the conformance scripts at the end see the node as it
-started. chip-tool subscriptions live in an interactive session (`chip-tool interactive start`
+adds endpoints removes them again, except the composed device of the tag scenario, which stays
+so that the conformance scripts at the end check its tags with `TC_DESC_2_2`. chip-tool subscriptions live in an interactive session (`chip-tool interactive start`
 in a long-lived container on the same fabric), because a plain `subscribe` command exits as soon
 as the subscription is established.
 
@@ -106,9 +109,10 @@ as the subscription is established.
 | `test_engine_runtime_added_endpoint_is_served` | an endpoint added while commissioned answers reads, appears in the aggregator's and the root's `PartsList`, and `ConfigurationVersion` increased |
 | `test_engine_wildcard_subscription_sees_added_endpoint` | with a wildcard subscription running, `add` produces a report for the new endpoint |
 | `test_engine_removed_endpoint_is_unsupported` | after `remove`, a read answers `UnsupportedEndpoint`, `PartsList` no longer lists the endpoint, and a subscription to it is told |
-| `test_engine_python_conformance` | `TC_DeviceBasicComposition.py` (with `TC_DESC_2_1` and `TC_DESC_2_2`) and `TC_BRBINFO_2_1.py` run through the framework with `pics/engine-onoff-node.pics`; the first commissions the node as another fabric, the second runs on that fabric; the parsed summaries must show no failure or error, the named cases `PASS`, and every skipped record is listed with the framework's reason |
+| `test_engine_composed_siblings_carry_tags` | a composed device (a `bridged-node` at endpoint 10 with two on/off lights at 11 and 12, tagged `Common Number` 1 and 2 with label `Left`) serves the parts in the parent's `PartsList`, each child's `TagList` as given and the `TagList` feature in its Descriptor `FeatureMap`; the untagged parent has neither and answers a `TagList` read `UNSUPPORTED_ATTRIBUTE` |
+| `test_engine_python_conformance` | `TC_DeviceBasicComposition.py` (with `TC_DESC_2_1`, and `TC_DESC_2_2` on the composed device the tag scenario leaves) and `TC_BRBINFO_2_1.py` run through the framework with `pics/engine-onoff-node.pics`; the first commissions the node as another fabric, the second runs on that fabric; the parsed summaries must show no failure or error, the named cases `PASS`, and every skipped record is listed with the framework's reason |
 
-All eight engine scenarios pass on the runner; none is marked as an expected failure. Two
+All nine engine scenarios pass on the runner; none is marked as an expected failure. Two
 findings from the first runs shape how the conformance scenario is arranged:
 
 - **The framework reuses its PASE session.** When the Python framework commissions the node

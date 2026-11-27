@@ -3,13 +3,16 @@ built on the engine facade, with endpoints added and removed while it runs.
 
 The scenarios share one engine DUT and one chip-tool fabric (session fixtures) and run in file
 order: commissioning first, the restart in the middle, the Python conformance scripts last.
-Every scenario that adds endpoints removes them again, so the conformance scripts see the node
-as it started: the aggregator at endpoint 1 and the light at endpoint 2.
+Every scenario that adds endpoints removes them again, except the composed device with tagged
+siblings, which stays for the conformance scripts so that `TC_DESC_2_2` checks its tags. The
+conformance scripts see the aggregator at endpoint 1, the light at endpoint 2 and, when the tag
+scenario ran before them, the composed device at endpoints 10 to 12.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 import pytest
@@ -33,6 +36,14 @@ ADDED_SENSOR = 5
 ADDED_LIGHT = 6
 WILDCARD_SENSOR = 7
 REMOVED_LIGHT = 8
+# A composed device with two parts of the same device type; it stays for the conformance scripts.
+COMPOSED_PARENT = 10
+COMPOSED_FIRST = 11
+COMPOSED_SECOND = 12
+# The `Common Number` semantic tag namespace (data model `namespaces/Namespace-Common-Number.xml`).
+COMMON_NUMBER = 7
+# Bit 0 of the Descriptor `FeatureMap`: the `TagList` feature.
+TAG_LIST_FEATURE = 0x1
 
 PICS_FILE = INTEROP_ROOT / "pics" / "engine-onoff-node.pics"
 # How long a subscription report may take after the change: the subscriptions ask for a
@@ -213,6 +224,76 @@ def test_engine_removed_endpoint_is_unsupported(
         session.close()
         if REMOVED_LIGHT in engine_chiptool.read_parts_list(node, AGGREGATOR):
             dut.remove(REMOVED_LIGHT)
+
+
+def read_tag_list(chiptool: ChipTool, node: int, endpoint: int) -> list[tuple[int, int, str | None]]:
+    """The Descriptor ``TagList`` of ``endpoint`` as ``(namespace, tag, label)`` per entry.
+
+    chip-tool prints a list of structs as ``TagList: N entries`` followed by one block per entry,
+    opened by ``[i]: {``, with ``MfgCode``, ``NamespaceID``, ``Tag`` and, when present, ``Label``
+    lines. A label that is absent or null is ``None``.
+    """
+    process = chiptool.read("descriptor", "tag-list", node, endpoint)
+    header = re.compile(r"TagList:\s*(\d+) entries")
+    entry_start = re.compile(r"\[\d+\]:\s*\{")
+    field = re.compile(r"\b(NamespaceID|Tag|Label):\s*(.*?)\s*$")
+    lines = process.lines
+    start = next((i for i, line in enumerate(lines) if header.search(line)), None)
+    if start is None:
+        raise AssertionError(f"no TagList in the output for endpoint {endpoint}:\n{process.tail()}")
+    count = int(header.search(lines[start]).group(1))
+    blocks: list[dict[str, str]] = []
+    for line in lines[start + 1 :]:
+        if entry_start.search(line):
+            if len(blocks) == count:
+                break
+            blocks.append({})
+            continue
+        match = field.search(line)
+        if match and blocks and match.group(1) not in blocks[-1]:
+            blocks[-1][match.group(1)] = match.group(2)
+    entries: list[tuple[int, int, str | None]] = []
+    for block in blocks:
+        if "NamespaceID" not in block or "Tag" not in block:
+            raise AssertionError(f"incomplete TagList entry {block} for endpoint {endpoint}:\n{process.tail()}")
+        label = block.get("Label")
+        entries.append((int(block["NamespaceID"]), int(block["Tag"]), None if label in (None, "null") else label))
+    if len(entries) != count:
+        raise AssertionError(f"TagList announces {count} entries, {len(entries)} were printed:\n{process.tail()}")
+    return entries
+
+
+def test_engine_composed_siblings_carry_tags(
+    engine_commissioned_dut: CommissionedEngineDut, engine_chiptool: ChipTool
+) -> None:
+    """Two parts of the same device type under one bridged node carry distinct Descriptor tags.
+
+    The parent (a Bridged Node) has no tags and no `TagList` feature; each child reports its
+    `TagList` and sets the feature. The device stays on the node so that the conformance
+    scripts' `TC_DESC_2_2` checks it.
+    """
+    node, dut = engine_commissioned_dut.node_id, engine_commissioned_dut.dut
+
+    dut.add(COMPOSED_PARENT, "bridged-node")
+    try:
+        dut.add(COMPOSED_FIRST, "on-off-light", parent=COMPOSED_PARENT, tags=[f"{COMMON_NUMBER}:1"])
+        dut.add(COMPOSED_SECOND, "on-off-light", parent=COMPOSED_PARENT, tags=[f"{COMMON_NUMBER}:2:Left"])
+
+        assert engine_chiptool.read_parts_list(node, COMPOSED_PARENT) == [COMPOSED_FIRST, COMPOSED_SECOND]
+        assert read_tag_list(engine_chiptool, node, COMPOSED_FIRST) == [(COMMON_NUMBER, 1, None)]
+        assert read_tag_list(engine_chiptool, node, COMPOSED_SECOND) == [(COMMON_NUMBER, 2, "Left")]
+        for endpoint in (COMPOSED_FIRST, COMPOSED_SECOND):
+            features = int(engine_chiptool.read_value("descriptor", "feature-map", "FeatureMap", node, endpoint))
+            assert features & TAG_LIST_FEATURE, f"endpoint {endpoint}: FeatureMap {features}"
+        parent_features = int(
+            engine_chiptool.read_value("descriptor", "feature-map", "FeatureMap", node, COMPOSED_PARENT)
+        )
+        assert not parent_features & TAG_LIST_FEATURE, f"parent FeatureMap {parent_features}"
+        failure = engine_chiptool.read_failure("descriptor", "tag-list", node, COMPOSED_PARENT)
+        assert "UNSUPPORTED_ATTRIBUTE" in failure, failure
+    except BaseException:
+        dut.remove(COMPOSED_PARENT)
+        raise
 
 
 def run_framework_scripts(
