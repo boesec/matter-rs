@@ -10,6 +10,13 @@
 //!
 //! The table holds the root endpoint (rs-matter's own system clusters), the aggregator and the
 //! product's endpoints, each with a Descriptor cluster the engine serves itself.
+//!
+//! An endpoint id keeps its shape while it is present: a second `add` of a present id is a
+//! duplicate whatever its description says. Once removed, the id may come back with any shape.
+//! rs-matter's path expansion keeps positional cursors across its lock releases and recovers by
+//! endpoint id, so an expansion that straddles a removal and a re-add may skip or repeat an
+//! item of that endpoint but never fails; the re-added endpoint gets fresh random data versions
+//! and the node's configuration version is bumped, so subscribers re-read it.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -34,8 +41,25 @@ const DEVICE_TYPE_LIST: AttributeId = AttributeId::new(0x0000);
 const SERVER_LIST: AttributeId = AttributeId::new(0x0001);
 /// `Descriptor::ClientList`.
 const CLIENT_LIST: AttributeId = AttributeId::new(0x0002);
-/// `Descriptor::PartsList`.
-const PARTS_LIST: AttributeId = AttributeId::new(0x0003);
+/// `Descriptor::PartsList`; the one attribute of an ancestor that an add or a removal changes.
+pub(crate) const PARTS_LIST: AttributeId = AttributeId::new(0x0003);
+
+/// What an add or a removal changed, for the interaction model's subscribers.
+///
+/// The added or removed endpoints changed as a whole: every attribute of every cluster is new
+/// or gone. Their ancestors did not change shape; only their Descriptor `PartsList` lists one
+/// endpoint more or less. Telling the interaction model that an ancestor changed as a whole
+/// would bump every cluster's data version on it and make every subscriber re-read all of it,
+/// which on the root endpoint is every system cluster; the reference SDK marks only `PartsList`
+/// of each parent and of the root dirty, and so does this engine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Changed {
+    /// The endpoints that were added or removed, the removed subtree included.
+    pub(crate) endpoints: Vec<EndpointId>,
+    /// The endpoints whose Descriptor `PartsList` changed: the parents up to the aggregator,
+    /// the aggregator and the root.
+    pub(crate) parts_lists: Vec<EndpointId>,
+}
 
 /// The root endpoint with rs-matter's system clusters for an Ethernet (IP only) node.
 const ROOT: Endpoint<'static> = rs_matter::root_endpoint!(eth);
@@ -379,16 +403,13 @@ impl Table {
         Ok(())
     }
 
-    /// Adds an endpoint. Returns the endpoints whose metadata changed: the new one, its
-    /// ancestors up to the aggregator, and the root.
+    /// Adds an endpoint. Returns what changed: the new endpoint as a whole, and the `PartsList`
+    /// of its ancestors up to the aggregator and of the root.
     ///
     /// # Errors
     ///
     /// As [`matter_rs_engine::Running::add_endpoint`].
-    pub(crate) fn add(
-        &mut self,
-        description: EndpointDescription,
-    ) -> Result<Vec<EndpointId>, Error> {
+    pub(crate) fn add(&mut self, description: EndpointDescription) -> Result<Changed, Error> {
         self.validate(&description)?;
         let shapes: Vec<ClusterShape> = description
             .clusters
@@ -463,9 +484,10 @@ impl Table {
             },
         );
 
-        let mut changed = vec![id];
-        changed.extend(self.ancestors(parent));
-        Ok(changed)
+        Ok(Changed {
+            endpoints: vec![id],
+            parts_lists: self.ancestors(parent),
+        })
     }
 
     /// The chain from `parent` up to the aggregator, then the root. `None` means directly
@@ -485,13 +507,14 @@ impl Table {
         chain
     }
 
-    /// Removes an endpoint and every endpoint composed under it. Returns the endpoints whose
-    /// metadata changed: the removed ones, the ancestors of the removed endpoint, and the root.
+    /// Removes an endpoint and every endpoint composed under it. Returns what changed: the
+    /// removed endpoints as a whole, and the `PartsList` of the removed endpoint's ancestors
+    /// and of the root.
     ///
     /// # Errors
     ///
     /// [`Error::UnknownEndpoint`] when the product did not add `id`.
-    pub(crate) fn remove(&mut self, id: EndpointId) -> Result<Vec<EndpointId>, Error> {
+    pub(crate) fn remove(&mut self, id: EndpointId) -> Result<Changed, Error> {
         let Some(removed) = self.product.get(&id) else {
             return Err(Error::UnknownEndpoint(id));
         };
@@ -516,9 +539,10 @@ impl Table {
             self.product.remove(doomed_id);
             self.endpoints.retain(|e| e.id != doomed_id.raw());
         }
-        let mut changed = doomed;
-        changed.extend(self.ancestors(parent));
-        Ok(changed)
+        Ok(Changed {
+            endpoints: doomed,
+            parts_lists: self.ancestors(parent),
+        })
     }
 
     /// Checks that `endpoint` lists `attribute` in `cluster`.
@@ -777,9 +801,10 @@ mod tests {
     };
     use rs_matter::dm::Metadata as _;
 
-    use super::{DESCRIPTOR, PathError, ROOT, Table, known_cluster};
+    use super::{Changed, DESCRIPTOR, PathError, ROOT, Table, known_cluster};
 
     const AGGREGATOR: EndpointId = EndpointId::new(1);
+    const ROOT_ID: EndpointId = EndpointId::new(0);
     const LIGHT: EndpointId = EndpointId::new(2);
     const ON_OFF: ClusterId = ClusterId::new(0x0006);
     const ON_OFF_ATTRIBUTE: AttributeId = AttributeId::new(0);
@@ -841,7 +866,13 @@ mod tests {
     fn add_builds_metadata_and_notifies_the_chain() {
         let mut table = Table::new(AGGREGATOR, 4);
         let changed = table.add(light(LIGHT)).unwrap();
-        assert_eq!(changed, vec![LIGHT, AGGREGATOR, EndpointId::new(0)]);
+        assert_eq!(
+            changed,
+            Changed {
+                endpoints: vec![LIGHT],
+                parts_lists: vec![AGGREGATOR, ROOT_ID],
+            }
+        );
         let ids: Vec<u16> = table.endpoints().iter().map(|e| e.id).collect();
         assert_eq!(ids, vec![0, 1, 2]);
 
@@ -934,7 +965,14 @@ mod tests {
                 ..light(part)
             })
             .unwrap();
-        assert_eq!(changed, vec![part, LIGHT, AGGREGATOR, EndpointId::new(0)]);
+        // The part is new as a whole; its parent, the aggregator and the root only list it.
+        assert_eq!(
+            changed,
+            Changed {
+                endpoints: vec![part],
+                parts_lists: vec![LIGHT, AGGREGATOR, ROOT_ID],
+            }
+        );
         assert_eq!(
             table.read(2, DESCRIPTOR.raw(), 3),
             Ok(Value::List(vec![Value::U16(3)]))
@@ -944,7 +982,13 @@ mod tests {
             Ok(Value::List(vec![Value::U16(2), Value::U16(3)]))
         );
         let changed = table.remove(LIGHT).unwrap();
-        assert_eq!(changed, vec![LIGHT, part, AGGREGATOR, EndpointId::new(0)]);
+        assert_eq!(
+            changed,
+            Changed {
+                endpoints: vec![LIGHT, part],
+                parts_lists: vec![AGGREGATOR, ROOT_ID],
+            }
+        );
         assert!(table.product_ids().is_empty());
         assert_eq!(table.endpoints().len(), 2);
         assert_eq!(table.remove(LIGHT), Err(Error::UnknownEndpoint(LIGHT)));
@@ -981,6 +1025,93 @@ mod tests {
         assert_eq!(
             table.add(light(EndpointId::new(3))),
             Err(Error::CapacityExceeded { what: "endpoints" })
+        );
+    }
+
+    /// A light with another shape under the same id: one cluster less and a sensor device
+    /// type, so that the cluster list, the device types and the data versions all differ.
+    fn sensor_shaped(id: EndpointId) -> EndpointDescription {
+        EndpointDescription {
+            id,
+            device_types: vec![DeviceType {
+                id: DeviceTypeId::new(0x0015),
+                revision: 2,
+            }],
+            clusters: vec![ClusterDescription {
+                id: ClusterId::new(0x0045),
+                revision: 3,
+                feature_map: 0,
+                attributes: vec![AttributeId::new(0)],
+                accepted_commands: vec![],
+                generated_commands: vec![],
+                events: vec![],
+            }],
+            parent: None,
+            initial_values: vec![(
+                ClusterId::new(0x0045),
+                AttributeId::new(0),
+                Value::Bool(true),
+            )],
+        }
+    }
+
+    /// While an endpoint id is present its shape is fixed: a second description under the
+    /// same id is a duplicate even when it describes other clusters, and the metadata, the
+    /// values and the data versions of the present endpoint stay untouched.
+    #[test]
+    fn re_add_same_id_while_present_is_duplicate() {
+        let mut table = Table::new(AGGREGATOR, 4);
+        table.add(light(LIGHT)).unwrap();
+        let clusters_before = table.endpoints()[2].clusters.as_ptr();
+        let dataver_before = table.dataver(2, ON_OFF.raw()).unwrap();
+
+        assert_eq!(
+            table.add(sensor_shaped(LIGHT)),
+            Err(Error::DuplicateEndpoint(LIGHT))
+        );
+
+        let ids: Vec<u16> = table.endpoints().iter().map(|e| e.id).collect();
+        assert_eq!(ids, vec![0, 1, 2]);
+        assert_eq!(table.endpoints()[2].clusters.as_ptr(), clusters_before);
+        assert_eq!(table.dataver(2, ON_OFF.raw()), Ok(dataver_before));
+        assert_eq!(table.read(2, ON_OFF.raw(), 0), Ok(Value::Bool(false)));
+        assert_eq!(table.read(2, 0x0045, 0), Err(PathError::Cluster));
+        assert_eq!(table.product_ids(), vec![LIGHT]);
+    }
+
+    /// Once removed, an id may come back with any shape: the metadata follows the new
+    /// description, the old values are gone, and the data versions are fresh.
+    #[test]
+    fn re_add_with_different_shape_after_remove_is_fine() {
+        let mut table = Table::new(AGGREGATOR, 4);
+        table.add(light(LIGHT)).unwrap();
+        let light_clusters = table.endpoints()[2].clusters.as_ptr();
+        let shapes_before = table.shapes.cluster_lists.len();
+        table.remove(LIGHT).unwrap();
+
+        let changed = table.add(sensor_shaped(LIGHT)).unwrap();
+        assert_eq!(
+            changed,
+            Changed {
+                endpoints: vec![LIGHT],
+                parts_lists: vec![AGGREGATOR, ROOT_ID],
+            }
+        );
+
+        let endpoint = &table.endpoints()[2];
+        assert_eq!(endpoint.id, 2);
+        assert_ne!(endpoint.clusters.as_ptr(), light_clusters);
+        let clusters: Vec<u32> = endpoint.clusters.iter().map(|c| c.id).collect();
+        assert_eq!(clusters, vec![DESCRIPTOR.raw(), 0x0045]);
+        assert_eq!(endpoint.device_types[0].dtype, 0x0015);
+        assert_eq!(table.shapes.cluster_lists.len(), shapes_before + 1);
+        assert_eq!(table.read(2, 0x0045, 0), Ok(Value::Bool(true)));
+        assert_eq!(table.read(2, ON_OFF.raw(), 0), Err(PathError::Cluster));
+        assert!(table.dataver(2, 0x0045).is_ok());
+        assert_eq!(table.dataver(2, ON_OFF.raw()), Err(PathError::Cluster));
+        assert_eq!(
+            table.read(1, DESCRIPTOR.raw(), 3),
+            Ok(Value::List(vec![Value::U16(2)]))
         );
     }
 

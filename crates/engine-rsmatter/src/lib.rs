@@ -69,8 +69,9 @@
 //! `has_fabrics`, `mdns_services`, `with_state` for the fabric table), `InteractionModel`
 //! (construction over a `ByteBuffers` pool, startup, factory reset, `run`,
 //! `open_basic_comm_window`, `close_comm_window`, `bump_configuration_version`,
-//! `emit_shut_down`, `notify_endpoint_changed`, the `AttrChangeNotifier`, `EventEmitter` and
-//! `HandlerContext` traits), `MatterBuffers`, `DefaultResponder`, the `AsyncHandler`,
+//! `emit_shut_down`, `notify_endpoint_changed`, `notify_attr_changed`, the
+//! `AttrChangeNotifier`, `EventEmitter` and `HandlerContext` traits), `MatterBuffers`,
+//! `DefaultResponder`, the `AsyncHandler`,
 //! `Metadata`, `Node`, `Endpoint` and `Cluster` types with the generated `FULL_CLUSTER`
 //! constants, `EthSysHandlerBuilder` and `root_endpoint!`, `KvBlobStore`, the TLV reader and
 //! writer with their `TlvError`, `BasicCommData`'s pairing code and `QrPayload`,
@@ -184,9 +185,14 @@
 //! interaction model, which bumps the cluster's data version and reports to subscribers;
 //! [`Running::emit_event`] goes to rs-matter's event queue with `Info` priority;
 //! [`Running::set_reachable`] does both for the Bridged Device Basic Information cluster.
-//! Adding or removing an endpoint tells the interaction model that the endpoint, its ancestors
-//! up to the aggregator and the root changed, and bumps `BasicInformation::ConfigurationVersion`,
-//! which rs-matter persists.
+//! Adding or removing an endpoint tells the interaction model that the added or removed
+//! endpoints changed as a whole (every cluster's data version is bumped, every attribute is
+//! reported to subscribers) and that the Descriptor `PartsList` of the parents up to the
+//! aggregator, of the aggregator and of the root changed (that one attribute is reported and
+//! only the Descriptor's data version moves), then bumps `BasicInformation::ConfigurationVersion`,
+//! which rs-matter persists and reports. This is what the reference SDK does when an endpoint is
+//! enabled or disabled; an endpoint-wide notification of the root would re-report every system
+//! cluster to every subscriber on every bridged add or removal.
 //!
 //! # Dynamic endpoints at this revision
 //!
@@ -200,16 +206,87 @@
 //! - **Restart with persisted state**: the fabric survives in the storage, the controller
 //!   reconnects without re-commissioning, the product adds its endpoints again and restores its
 //!   own values.
-//! - **Adding and removing while running** (in process): the metadata, the Descriptor lists and
-//!   the data versions follow, the interaction model is notified for the changed endpoints and
-//!   the configuration version is bumped.
+//! - **Adding and removing while running**, with chip-tool as the client (the engine example
+//!   as the device under test of the interop harness, scenarios `test_engine_*`): an endpoint
+//!   added while commissioned is read, listed in the aggregator's and the root's `PartsList`,
+//!   and `ConfigurationVersion` has increased (`test_engine_runtime_added_endpoint_is_served`);
+//!   a controller with a wildcard subscription receives a report with the attributes of an
+//!   endpoint added after it subscribed (`test_engine_wildcard_subscription_sees_added_endpoint`);
+//!   after a removal a read answers `UnsupportedEndpoint`, `PartsList` no longer lists the
+//!   endpoint, and a concrete-path subscription to it receives that status in its next report
+//!   and stays alive (`test_engine_removed_endpoint_is_unsupported`). The connectedhomeip
+//!   scripts `TC_BRBINFO_2_1` and `TC_DeviceBasicComposition` (with `TC_DESC_2_1`, `TC_DESC_2_2`
+//!   and `TC_IDM_10_1`) pass against the node (`test_engine_python_conformance`).
+//! - **Notification of the ancestors** is attribute-level (see "Endpoints and values"): shown
+//!   in process through a real interaction model over this crate's data model, where an add
+//!   bumps on the root exactly the Descriptor's and Basic Information's data versions
+//!   (`interaction_model_bumps_only_the_descriptor_on_ancestors_and_root`).
+//! - **Shape stability**: an endpoint id keeps its shape while present (a second description
+//!   under the same id is a duplicate), and may come back with any shape after a removal
+//!   (`re_add_same_id_while_present_is_duplicate`,
+//!   `re_add_with_different_shape_after_remove_is_fine`). rs-matter's path expansion recovers
+//!   by endpoint id, the re-added endpoint gets fresh data versions and the configuration
+//!   version is bumped, so an expansion that straddles the change skips or repeats an item at
+//!   worst.
 //!
-//! What is not shown end to end and stays open for the dynamic-endpoint work on top of this
-//! crate: whether a controller with a wildcard subscription receives reports for an endpoint
-//! added while it is subscribed, and whether a concrete-path subscription to a removed endpoint
-//! is answered `UnsupportedEndpoint` by the next report. Both are what rs-matter's
-//! `notify_endpoint_changed` and its path expansion are designed for, but no controller has
-//! verified them against this crate yet.
+//! What stays open, and lies in rs-matter rather than in this crate:
+//!
+//! - A concrete-path subscription to a removed endpoint receives `UnsupportedEndpoint` in
+//!   **every** report, keep-alives included, because the path expander returns the status of a
+//!   non-wildcard path before the report filter is consulted; the reference SDK reports a dirty
+//!   path that no longer resolves once. A deviation in frequency, not in content.
+//! - A subscription whose report fails to reach its subscriber is retried with a back-off
+//!   until its maximum interval has elapsed (see the findings below); the reference SDK drops
+//!   it at the first failure.
+//! - rs-matter has no ready-made `Metadata` for a lock-guarded dynamic node, its bridge example
+//!   is not conformant (`UniqueID`), and its test suite has no bridge device under test; none of
+//!   this is needed by this crate, which serves its own metadata and Descriptor.
+//!
+//! # Findings from the client-driven scenarios
+//!
+//! Four observations from the first harness runs, each with its verdict:
+//!
+//! - **The PASE session is gone after commissioning.** rs-matter's behaviour, as the
+//!   specification requires, not this crate's: the General Commissioning handler removes the
+//!   node's PASE sessions when `CommissioningComplete` succeeds, marking the one the command
+//!   came over as expired so that the response still goes out
+//!   (`rs-matter-dm/src/clusters/gen_comm.rs`, `handle_commissioning_complete`, at the pin;
+//!   its comment quotes the rule). The reference SDK does the same
+//!   (`src/app/server/CommissioningWindowManager.cpp`, `ExpireAllPASESessions` on the
+//!   commissioning-complete event). The Python test framework keeps using its PASE session when
+//!   it commissioned the node in the same process; against this node the next interaction fails
+//!   with "not connected", against the reference SDK a subscription over PASE is refused with
+//!   `UnsupportedAccess`, which the framework's composition test tolerates with a comment
+//!   (`src/python_testing/TC_DeviceBasicComposition.py`). The harness therefore runs the
+//!   composition script over CASE. Nothing to fix here.
+//! - **Subscription reports are retried after a subscriber vanished.** rs-matter's design, not
+//!   this crate's, and not changeable from here: when a report fails (the MRP gives up after
+//!   its retransmissions, "Too many retransmissions. Giving up", `rs-matter-transport/src/mrp.rs`),
+//!   a non-ICD node keeps the subscription and retries with an exponential back-off of 2, 4,
+//!   8 … seconds capped at the maximum interval, without advancing its watermarks, until the
+//!   maximum interval has elapsed since the last successful report, when the subscription
+//!   expires (`rs-matter-im/src/lib.rs`, `process_subscriptions`; `rs-matter-im/src/subscriptions.rs`,
+//!   `ReportContext::set_keep_retry`, `Subscription::is_expired`, `retry_backoff_secs`). Only an
+//!   ICD drops at the first failure (`set_drop_failed`). The noise is therefore bounded by the
+//!   subscription's maximum interval (120 seconds at most with rs-matter's default cap): about
+//!   six attempts, each with the MRP's retransmissions. The reference SDK closes the read handler
+//!   at the first unacknowledged report (`src/app/ReadHandler.cpp`, `OnResponseTimeout`). The
+//!   interaction model offers no choice to the application; a switch to drop on the first
+//!   failure would be an upstream change.
+//! - **General Commissioning attribute `0x000C` answers `UnsupportedAttribute`.** Correct by the
+//!   data model: in revision 2 of the cluster (data model 1.6,
+//!   `data_model/1.6/clusters/GeneralCommissioningCluster.xml`) attribute `0x000C` is
+//!   `IsCommissioningWithoutPower`, provisional and optional; it is not one of the terms and
+//!   conditions attributes (`0x0005` to `0x0009`), which are mandatory only with the `TC`
+//!   feature that this node does not advertise. rs-matter's handler serves the required
+//!   attributes only (`rs-matter-dm/src/clusters/gen_comm.rs`, `with!(required)`), so a read
+//!   of an optional, unsupported attribute is answered `UnsupportedAttribute` as the
+//!   Interaction Model prescribes. Nothing to do.
+//! - **The Python framework removes other administrators' fabrics.** Framework behaviour: its
+//!   cleanup removes every fabric that was not in the baseline it captured at setup
+//!   (`remove_extra_fabrics`, on by default, in the framework's `matter_testing.py`), which
+//!   after its own commissioning is every other fabric, chip-tool's included. The harness runs
+//!   the framework scripts last on this node for that reason; nothing for the engine.
 //!
 //! # Limits of this implementation
 //!

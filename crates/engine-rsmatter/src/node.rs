@@ -53,7 +53,7 @@ use crate::handler::{DynamicHandler, TableMetadata};
 use crate::network;
 use crate::pairing;
 use crate::store::{FacadeKvStore, KeyIndex};
-use crate::table::Table;
+use crate::table::{Changed, DESCRIPTOR, PARTS_LIST, Table};
 use crate::tlv::write_event_fields;
 
 /// How often the service loop compares the commissioning state and the fabric table with the
@@ -434,14 +434,14 @@ async fn handle_request<C, B, T, K, const NS: usize, const NE: usize>(
             let result = table.borrow_mut().add(description);
             reply.complete(result.map(|changed| {
                 log::info!("endpoint {id} added");
-                notify_endpoints(im, &changed);
+                notify_changed(im, &changed);
             }));
         }
         Request::RemoveEndpoint(endpoint, reply) => {
             let result = table.borrow_mut().remove(endpoint);
             reply.complete(result.map(|changed| {
                 log::info!("endpoint {endpoint} removed");
-                notify_endpoints(im, &changed);
+                notify_changed(im, &changed);
             }));
         }
         Request::SetAttributes(values, reply) => {
@@ -546,22 +546,40 @@ async fn handle_request<C, B, T, K, const NS: usize, const NE: usize>(
     let _ = shared;
 }
 
-/// Notifies the interaction model that the metadata of `endpoints` changed, and bumps the
-/// node's configuration version because its fixed-quality surface changed.
-fn notify_endpoints<C, B, T, K, const NS: usize, const NE: usize>(
+/// Tells the interaction model what an add or a removal changed, and bumps the node's
+/// configuration version because its fixed-quality surface changed.
+fn notify_changed<C, B, T, K, const NS: usize, const NE: usize>(
     im: &InteractionModel<'_, C, B, T, K, (), NS, NE>,
-    endpoints: &[EndpointId],
+    changed: &Changed,
 ) where
     C: Crypto,
     B: ByteBuffers,
     T: DataModel,
     K: KvBlobStoreAccess,
 {
-    for endpoint in endpoints {
-        im.notify_endpoint_changed(endpoint.raw());
-    }
+    notify_endpoints(im, changed);
     if let Err(error) = im.bump_configuration_version() {
         log::warn!("configuration version not bumped: {error:?}");
+    }
+}
+
+/// Tells the notifier what an add or a removal changed: the added or removed endpoints as a
+/// whole, the ancestors and the root through their Descriptor `PartsList` only.
+///
+/// An endpoint-wide notification makes the interaction model bump the data version of every
+/// cluster of that endpoint and re-report all of it to every subscriber. That is right for the
+/// endpoint that appeared or disappeared, and wrong for its ancestors: nothing changed on them
+/// but one list, and on the root an endpoint-wide notification would re-report every system
+/// cluster to every subscriber on every bridged add or removal. The attribute-level
+/// notification bumps the Descriptor's data version alone and is recorded for that one
+/// attribute, so a subscriber of another root cluster, or of another Basic Information
+/// attribute than `ConfigurationVersion`, receives nothing.
+fn notify_endpoints(notifier: &dyn AttrChangeNotifier, changed: &Changed) {
+    for endpoint in &changed.endpoints {
+        notifier.notify_endpoint_changed(endpoint.raw());
+    }
+    for endpoint in &changed.parts_lists {
+        notifier.notify_attr_changed(endpoint.raw(), DESCRIPTOR.raw(), PARTS_LIST.raw());
     }
 }
 
@@ -618,4 +636,290 @@ where
     log::info!("fabric {fabric} removed by the product");
     im.notify_fabric_removed(index);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::future::Future;
+    use std::rc::Rc;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use matter_rs_engine::{
+        AttributeId, ClusterDescription, ClusterId, CommandId, DeviceType, DeviceTypeId,
+        EndpointDescription, EndpointId, MemoryStorage, Storage, Value,
+    };
+    use rs_matter::Matter;
+    use rs_matter::crypto::{Crypto, test_only_crypto};
+    use rs_matter::dm::devices::test::{TEST_DEV_ATT, TEST_DEV_COMM, TEST_DEV_DET};
+    use rs_matter::dm::endpoints::{EthSysHandlerBuilder, ROOT_ENDPOINT_ID};
+    use rs_matter::dm::networks::SysNetifs;
+    use rs_matter::dm::{
+        AsyncHandler, AttrChangeNotifier, HandlerContext, InvokeContext, InvokeReply, LifecycleOp,
+        MatchContext, ReadContext, ReadReply, WriteContext,
+    };
+    use rs_matter::im::{InteractionModel, InteractionModelState};
+    use rs_matter::transport::MatterBuffers;
+
+    use crate::channel::Shared;
+    use crate::handler::{DynamicHandler, TableMetadata};
+    use crate::store::{FacadeKvStore, KeyIndex};
+    use crate::table::{Changed, DESCRIPTOR, PARTS_LIST, Table};
+
+    use super::{notify_changed, notify_endpoints};
+
+    const AGGREGATOR: EndpointId = EndpointId::new(1);
+    const LIGHT: EndpointId = EndpointId::new(2);
+    const PART: EndpointId = EndpointId::new(3);
+    const ON_OFF: ClusterId = ClusterId::new(0x0006);
+    /// `BasicInformation`, whose `ConfigurationVersion` the configuration bump reports.
+    const BASIC_INFORMATION: u32 = 0x0028;
+
+    fn light(id: EndpointId, parent: Option<EndpointId>) -> EndpointDescription {
+        EndpointDescription {
+            id,
+            device_types: vec![DeviceType {
+                id: DeviceTypeId::new(0x0100),
+                revision: 3,
+            }],
+            clusters: vec![ClusterDescription {
+                id: ON_OFF,
+                revision: 6,
+                feature_map: 0,
+                attributes: vec![AttributeId::new(0)],
+                accepted_commands: vec![CommandId::new(2)],
+                generated_commands: vec![],
+                events: vec![],
+            }],
+            parent,
+            initial_values: vec![(ON_OFF, AttributeId::new(0), Value::Bool(false))],
+        }
+    }
+
+    /// What the engine told the interaction model.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum Notified {
+        Attribute(u16, u32, u32),
+        Cluster(u16, u32),
+        Endpoint(u16),
+        All,
+    }
+
+    #[derive(Default)]
+    struct Recorder(RefCell<Vec<Notified>>);
+
+    impl AttrChangeNotifier for Recorder {
+        fn notify_attr_changed(&self, endpoint_id: u16, cluster_id: u32, attr_id: u32) {
+            self.0
+                .borrow_mut()
+                .push(Notified::Attribute(endpoint_id, cluster_id, attr_id));
+        }
+
+        fn notify_cluster_changed(&self, endpoint_id: u16, cluster_id: u32) {
+            self.0
+                .borrow_mut()
+                .push(Notified::Cluster(endpoint_id, cluster_id));
+        }
+
+        fn notify_endpoint_changed(&self, endpoint_id: u16) {
+            self.0.borrow_mut().push(Notified::Endpoint(endpoint_id));
+        }
+
+        fn notify_all_changed(&self) {
+            self.0.borrow_mut().push(Notified::All);
+        }
+    }
+
+    /// An add or a removal notifies the added or removed endpoints as a whole and every
+    /// ancestor, the aggregator and the root through `Descriptor::PartsList` alone, so a
+    /// subscriber of anything else on them, Basic Information included, is not woken.
+    #[test]
+    fn ancestors_and_root_are_notified_through_descriptor_parts_list_only() {
+        let parts_list = |endpoint: EndpointId| {
+            Notified::Attribute(endpoint.raw(), DESCRIPTOR.raw(), PARTS_LIST.raw())
+        };
+        let mut table = Table::new(AGGREGATOR, 4);
+        table.add(light(LIGHT, None)).unwrap();
+
+        let recorder = Recorder::default();
+        let changed = table.add(light(PART, Some(LIGHT))).unwrap();
+        notify_endpoints(&recorder, &changed);
+        assert_eq!(
+            recorder.0.borrow().as_slice(),
+            [
+                Notified::Endpoint(PART.raw()),
+                parts_list(LIGHT),
+                parts_list(AGGREGATOR),
+                parts_list(EndpointId::new(ROOT_ENDPOINT_ID)),
+            ]
+        );
+
+        let recorder = Recorder::default();
+        let changed = table.remove(LIGHT).unwrap();
+        notify_endpoints(&recorder, &changed);
+        assert_eq!(
+            recorder.0.borrow().as_slice(),
+            [
+                Notified::Endpoint(LIGHT.raw()),
+                Notified::Endpoint(PART.raw()),
+                parts_list(AGGREGATOR),
+                parts_list(EndpointId::new(ROOT_ENDPOINT_ID)),
+            ]
+        );
+        // Nothing is notified endpoint- or cluster-wide on the root, and nothing node-wide.
+        assert!(!recorder.0.borrow().iter().any(|n| matches!(
+            n,
+            Notified::Endpoint(0) | Notified::Cluster(0, _) | Notified::All
+        )));
+    }
+
+    /// The `(endpoint, cluster)` contexts of the data version bumps a handler received.
+    type Bumps = Rc<RefCell<Vec<(Option<u16>, Option<u32>)>>>;
+
+    /// A handler that records every data version bump the interaction model routes to it and
+    /// forwards everything to the wrapped handler chain.
+    struct Recording<H> {
+        inner: H,
+        bumps: Bumps,
+    }
+
+    impl<H: AsyncHandler> AsyncHandler for Recording<H> {
+        fn read(
+            &self,
+            ctx: impl ReadContext,
+            reply: impl ReadReply,
+        ) -> impl Future<Output = Result<(), rs_matter::error::Error>> {
+            self.inner.read(ctx, reply)
+        }
+
+        fn write(
+            &self,
+            ctx: impl WriteContext,
+        ) -> impl Future<Output = Result<(), rs_matter::error::Error>> {
+            self.inner.write(ctx)
+        }
+
+        fn invoke(
+            &self,
+            ctx: impl InvokeContext,
+            reply: impl InvokeReply,
+        ) -> impl Future<Output = Result<(), rs_matter::error::Error>> {
+            self.inner.invoke(ctx, reply)
+        }
+
+        fn bump_dataver(&self, ctx: impl MatchContext) {
+            self.bumps.borrow_mut().push((ctx.endpt(), ctx.cluster()));
+            self.inner.bump_dataver(ctx);
+        }
+
+        fn lifecycle(
+            &self,
+            ctx: impl HandlerContext,
+            op: LifecycleOp,
+        ) -> Result<(), rs_matter::error::Error> {
+            self.inner.lifecycle(ctx, op)
+        }
+
+        fn run(
+            &self,
+            ctx: impl HandlerContext,
+        ) -> impl Future<Output = Result<(), rs_matter::error::Error>> {
+            self.inner.run(ctx)
+        }
+    }
+
+    /// Through a real interaction model over the node's data model, an add bumps on the root
+    /// the data versions of the Descriptor (for `PartsList`) and of Basic Information (for
+    /// `ConfigurationVersion`) and of no other system cluster, on the aggregator the
+    /// Descriptor's alone, and on the new endpoint every cluster's; the data versions of an
+    /// endpoint that was there before stay as they were.
+    #[test]
+    fn interaction_model_bumps_only_the_descriptor_on_ancestors_and_root() {
+        let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+        let matter = Matter::new(&TEST_DEV_DET, TEST_DEV_COMM, &TEST_DEV_ATT, 5540);
+        let index = Arc::new(KeyIndex::load(Arc::clone(&storage)).unwrap());
+        let kv = matter.kv(FacadeKvStore::new(storage, index));
+        matter.startup(&kv).unwrap();
+        let crypto = test_only_crypto();
+        let buffers: MatterBuffers = MatterBuffers::new();
+        let im_state: InteractionModelState = InteractionModelState::new();
+
+        let table = Rc::new(RefCell::new(Table::new(AGGREGATOR, 4)));
+        table.borrow_mut().add(light(LIGHT, None)).unwrap();
+        let bumps = Rc::new(RefCell::new(Vec::new()));
+        let handler = DynamicHandler::new(
+            Rc::clone(&table),
+            Arc::new(Shared::new()),
+            Duration::from_millis(100),
+        );
+        let data_model = (
+            TableMetadata(Rc::clone(&table)),
+            Recording {
+                inner: EthSysHandlerBuilder::new()
+                    .netif_diag(&SysNetifs)
+                    .build(&matter, crypto.rand().unwrap())
+                    .chain(|endpoint, _| endpoint != ROOT_ENDPOINT_ID, handler),
+                bumps: Rc::clone(&bumps),
+            },
+        );
+        let im = InteractionModel::new(&matter, &crypto, &buffers, data_model, &kv, &im_state);
+
+        let light_datavers = {
+            let table = table.borrow();
+            (
+                table.dataver(LIGHT.raw(), DESCRIPTOR.raw()).unwrap(),
+                table.dataver(LIGHT.raw(), ON_OFF.raw()).unwrap(),
+            )
+        };
+        let aggregator_dataver = table
+            .borrow()
+            .dataver(AGGREGATOR.raw(), DESCRIPTOR.raw())
+            .unwrap();
+
+        let changed = table.borrow_mut().add(light(PART, None)).unwrap();
+        assert_eq!(
+            changed,
+            Changed {
+                endpoints: vec![PART],
+                parts_lists: vec![AGGREGATOR, EndpointId::new(ROOT_ENDPOINT_ID)],
+            }
+        );
+        notify_changed(&im, &changed);
+
+        let bumps = bumps.borrow();
+        let on = |endpoint: u16| -> Vec<u32> {
+            let mut clusters: Vec<u32> = bumps
+                .iter()
+                .filter(|(e, _)| *e == Some(endpoint))
+                .map(|(_, c)| c.expect("every bump names its cluster"))
+                .collect();
+            clusters.sort_unstable();
+            clusters
+        };
+        assert_eq!(
+            on(ROOT_ENDPOINT_ID),
+            vec![DESCRIPTOR.raw(), BASIC_INFORMATION]
+        );
+        assert_eq!(on(AGGREGATOR.raw()), vec![DESCRIPTOR.raw()]);
+        assert_eq!(on(PART.raw()), vec![ON_OFF.raw(), DESCRIPTOR.raw()]);
+        assert_eq!(on(LIGHT.raw()), Vec::<u32>::new());
+        assert!(
+            bumps.iter().all(|(e, _)| e.is_some()),
+            "no node-wide bump: {bumps:?}"
+        );
+
+        let table = table.borrow();
+        assert_eq!(
+            table.dataver(AGGREGATOR.raw(), DESCRIPTOR.raw()).unwrap(),
+            aggregator_dataver.wrapping_add(1)
+        );
+        assert_eq!(
+            (
+                table.dataver(LIGHT.raw(), DESCRIPTOR.raw()).unwrap(),
+                table.dataver(LIGHT.raw(), ON_OFF.raw()).unwrap(),
+            ),
+            light_datavers
+        );
+    }
 }
