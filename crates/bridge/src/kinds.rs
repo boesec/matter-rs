@@ -19,8 +19,9 @@ use alloc::vec::Vec;
 use matter_rs_engine::{ClusterId, CommandId, DeviceType, EventId, Kind, Value};
 
 use crate::ids::{
-    boolean_state, color_control, device_type, identify, level_control, on_off,
-    relative_humidity_measurement, temperature_measurement,
+    boolean_state, color_control, device_type, identify, illuminance_measurement, level_control,
+    occupancy_sensing, on_off, pressure_measurement, relative_humidity_measurement,
+    temperature_measurement,
 };
 use crate::model::Attribute;
 
@@ -36,6 +37,9 @@ use crate::model::Attribute;
 /// | [`ContactSensor`](Self::ContactSensor) | Contact Sensor `0x0015` rev 2 | Boolean State | `StateValue` |
 /// | [`TemperatureSensor`](Self::TemperatureSensor) | Temperature Sensor `0x0302` rev 3 | Temperature Measurement | `Temperature` |
 /// | [`HumiditySensor`](Self::HumiditySensor) | Humidity Sensor `0x0307` rev 3 | Relative Humidity Measurement | `Humidity` |
+/// | [`PressureSensor`](Self::PressureSensor) | Pressure Sensor `0x0305` rev 3 | Pressure Measurement | `Pressure` |
+/// | [`LightSensor`](Self::LightSensor) | Light Sensor `0x0106` rev 4 | Illuminance Measurement | `Illuminance` |
+/// | [`OccupancySensor`](Self::OccupancySensor) | Occupancy Sensor `0x0107` rev 4 | Occupancy Sensing (Other) | `Occupancy` |
 ///
 /// Every kind also serves the Identify cluster (`IdentifyTime` 0, `IdentifyType` none), and the
 /// top endpoint of every device carries the Bridged Node device type with the Bridged Device
@@ -59,11 +63,18 @@ pub enum DeviceKind {
     TemperatureSensor,
     /// A relative humidity sensor.
     HumiditySensor,
+    /// A pressure sensor.
+    PressureSensor,
+    /// An illuminance sensor.
+    LightSensor,
+    /// An occupancy sensor; its sensing modality is reported as "other" unless the adapter
+    /// supplies the sensor type attributes.
+    OccupancySensor,
 }
 
 impl DeviceKind {
     /// Every kind, in the order of the table.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 11] = [
         Self::OnOffLight,
         Self::DimmableLight,
         Self::ColorTemperatureLight,
@@ -72,6 +83,9 @@ impl DeviceKind {
         Self::ContactSensor,
         Self::TemperatureSensor,
         Self::HumiditySensor,
+        Self::PressureSensor,
+        Self::LightSensor,
+        Self::OccupancySensor,
     ];
 
     /// The device type and revision of the kind.
@@ -86,6 +100,9 @@ impl DeviceKind {
             Self::ContactSensor => device_type::CONTACT_SENSOR,
             Self::TemperatureSensor => device_type::TEMPERATURE_SENSOR,
             Self::HumiditySensor => device_type::HUMIDITY_SENSOR,
+            Self::PressureSensor => device_type::PRESSURE_SENSOR,
+            Self::LightSensor => device_type::LIGHT_SENSOR,
+            Self::OccupancySensor => device_type::OCCUPANCY_SENSOR,
         };
         DeviceType { id, revision }
     }
@@ -102,6 +119,9 @@ impl DeviceKind {
             Self::ContactSensor => "contact-sensor",
             Self::TemperatureSensor => "temperature-sensor",
             Self::HumiditySensor => "humidity-sensor",
+            Self::PressureSensor => "pressure-sensor",
+            Self::LightSensor => "light-sensor",
+            Self::OccupancySensor => "occupancy-sensor",
         }
     }
 
@@ -150,6 +170,9 @@ impl DeviceKind {
             Self::ContactSensor => clusters.push(boolean_state_cluster()),
             Self::TemperatureSensor => clusters.push(temperature_cluster()),
             Self::HumiditySensor => clusters.push(humidity_cluster()),
+            Self::PressureSensor => clusters.push(pressure_cluster()),
+            Self::LightSensor => clusters.push(illuminance_cluster()),
+            Self::OccupancySensor => clusters.push(occupancy_cluster()),
         }
         clusters
     }
@@ -711,6 +734,68 @@ fn humidity_cluster() -> ClusterSpec {
     )
 }
 
+fn pressure_cluster() -> ClusterSpec {
+    measurement_cluster(
+        pressure_measurement::CLUSTER,
+        pressure_measurement::REVISION,
+        Kind::I16,
+        (i64::from(i16::MIN), i64::from(i16::MAX)),
+        Attribute::Pressure,
+        Attribute::PressureMin,
+        Attribute::PressureMax,
+    )
+}
+
+fn illuminance_cluster() -> ClusterSpec {
+    measurement_cluster(
+        illuminance_measurement::CLUSTER,
+        illuminance_measurement::REVISION,
+        Kind::U16,
+        (0, 0xFFFE),
+        Attribute::Illuminance,
+        Attribute::IlluminanceMin,
+        Attribute::IlluminanceMax,
+    )
+}
+
+/// Occupancy Sensing with the `Other` modality: the cluster requires at least one sensing
+/// feature, and `Other` is the one honest choice for a device the bridge knows nothing about.
+/// The legacy sensor type attributes take the values the specification prescribes for
+/// modalities without a value of their own (`PIR`); an adapter that knows its sensor overrides
+/// them.
+fn occupancy_cluster() -> ClusterSpec {
+    ClusterSpec {
+        id: occupancy_sensing::CLUSTER,
+        revision: occupancy_sensing::REVISION,
+        feature_map: occupancy_sensing::FEATURE_OTHER,
+        attributes: vec![
+            AttributeSpec::new(
+                Attribute::Occupancy,
+                Kind::U8,
+                Initial::Required,
+                Access::ReadOnly,
+            )
+            .range(0, 1),
+            AttributeSpec::new(
+                Attribute::OccupancySensorType,
+                Kind::U8,
+                Initial::Default(Value::U8(occupancy_sensing::SENSOR_TYPE_PIR)),
+                Access::ReadOnly,
+            )
+            .range(0, 3),
+            AttributeSpec::new(
+                Attribute::OccupancySensorTypeBitmap,
+                Kind::U8,
+                Initial::Default(Value::U8(occupancy_sensing::SENSOR_TYPE_BITMAP_PIR)),
+                Access::ReadOnly,
+            )
+            .range(0, 7),
+        ],
+        commands: vec![],
+        events: vec![],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec;
@@ -809,6 +894,18 @@ mod tests {
         assert_eq!(
             DeviceKind::HumiditySensor.required_attributes(),
             vec![Attribute::Humidity]
+        );
+        assert_eq!(
+            DeviceKind::PressureSensor.required_attributes(),
+            vec![Attribute::Pressure]
+        );
+        assert_eq!(
+            DeviceKind::LightSensor.required_attributes(),
+            vec![Attribute::Illuminance]
+        );
+        assert_eq!(
+            DeviceKind::OccupancySensor.required_attributes(),
+            vec![Attribute::Occupancy]
         );
     }
 

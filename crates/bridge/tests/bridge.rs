@@ -13,7 +13,8 @@ use std::time::Duration;
 
 use matter_rs_bridge::ids::{
     boolean_state, bridged_device_basic_information as bdbi, color_control as cc, identify,
-    level_control as lc, on_off, temperature_measurement,
+    illuminance_measurement, level_control as lc, occupancy_sensing, on_off, pressure_measurement,
+    temperature_measurement,
 };
 use matter_rs_bridge::numbering::{AGGREGATOR, MAP_KEY, NEXT_KEY};
 use matter_rs_bridge::{
@@ -462,7 +463,111 @@ fn kinds_describe_their_endpoints() {
             "{name}"
         );
     }
-    assert_eq!(DeviceKind::ALL.len(), expected_clusters.len());
+    assert_eq!(
+        DeviceKind::ALL
+            .iter()
+            .filter(|kind| expected_clusters.iter().any(|(k, _)| k == *kind))
+            .count(),
+        expected_clusters.len()
+    );
+    harness.stop();
+}
+
+#[test]
+fn stage2_sensors_describe_their_endpoints() {
+    let expected: &[(DeviceKind, ClusterId, Attribute, Value, u32)] = &[
+        (
+            DeviceKind::PressureSensor,
+            pressure_measurement::CLUSTER,
+            Attribute::Pressure,
+            Value::I16(1013),
+            0,
+        ),
+        (
+            DeviceKind::LightSensor,
+            illuminance_measurement::CLUSTER,
+            Attribute::Illuminance,
+            Value::U16(20000),
+            0,
+        ),
+        (
+            DeviceKind::OccupancySensor,
+            occupancy_sensing::CLUSTER,
+            Attribute::Occupancy,
+            Value::U8(0),
+            occupancy_sensing::FEATURE_OTHER,
+        ),
+    ];
+    let harness = Harness::start();
+    for (index, (kind, cluster, measured, initial, feature_map)) in expected.iter().enumerate() {
+        let name = kind.name();
+        let handle = harness.add(
+            DeviceSpec::single(key(name), name, *kind),
+            required_values(*kind),
+        );
+        let id = 2 + u16::try_from(index).unwrap();
+        let description = harness.endpoint(id);
+        assert_eq!(description.device_types[0], kind.device_type(), "{name}");
+        let mut listed: Vec<ClusterId> = description.clusters.iter().map(|c| c.id).collect();
+        listed.sort();
+        let mut wanted = vec![identify::CLUSTER, *cluster, bdbi::CLUSTER];
+        wanted.sort();
+        assert_eq!(listed, wanted, "{name}");
+        assert_eq!(
+            description.cluster(*cluster).unwrap().feature_map,
+            *feature_map,
+            "{name}"
+        );
+        assert_eq!(harness.read(id, *measured), Some(initial.clone()), "{name}");
+        for cluster in &description.clusters {
+            for attribute in &cluster.attributes {
+                assert!(
+                    harness.fake.read(ep(id), cluster.id, *attribute).is_some(),
+                    "{name}: {}/{attribute} has no value",
+                    cluster.id
+                );
+            }
+        }
+        // The sensors report through the handle like every other device.
+        let value = match measured {
+            Attribute::Pressure => Value::I16(990),
+            Attribute::Illuminance => Value::Null,
+            _ => Value::U8(occupancy_sensing::OCCUPIED),
+        };
+        block_on(handle.set(0, *measured, value.clone())).unwrap();
+        assert_eq!(harness.read(id, *measured), Some(value), "{name}");
+    }
+    // The measurement limits default to "not available" and may be supplied.
+    let limits = harness.add(
+        DeviceSpec::single(key("limits"), "Limits", DeviceKind::PressureSensor),
+        InitialValues::new()
+            .value(Attribute::Pressure, Value::I16(1000))
+            .value(Attribute::PressureMin, Value::I16(300))
+            .value(Attribute::PressureMax, Value::I16(1100)),
+    );
+    let id = limits.endpoints().unwrap()[0].endpoint.raw();
+    assert_eq!(
+        harness.read(id, Attribute::PressureMin),
+        Some(Value::I16(300))
+    );
+    assert_eq!(
+        harness.read(id, Attribute::PressureMax),
+        Some(Value::I16(1100))
+    );
+    assert_eq!(harness.read(2, Attribute::PressureMin), Some(Value::Null));
+    // An occupancy value outside the bitmap is refused.
+    let error = block_on(harness.bridge.add_device(
+        DeviceSpec::single(key("bad"), "Bad", DeviceKind::OccupancySensor),
+        InitialValues::new().value(Attribute::Occupancy, Value::U8(2)),
+    ))
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        Error::InvalidValue {
+            attribute: Attribute::Occupancy,
+            ..
+        }
+    ));
     harness.stop();
 }
 
