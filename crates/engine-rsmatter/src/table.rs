@@ -10,6 +10,13 @@
 //!
 //! The table holds the root endpoint (rs-matter's own system clusters), the aggregator and the
 //! product's endpoints, each with a Descriptor cluster the engine serves itself.
+//!
+//! An endpoint id keeps its shape while it is present: a second `add` of a present id is a
+//! duplicate whatever its description says. Once removed, the id may come back with any shape.
+//! rs-matter's path expansion keeps positional cursors across its lock releases and recovers by
+//! endpoint id, so an expansion that straddles a removal and a re-add may skip or repeat an
+//! item of that endpoint but never fails; the re-added endpoint gets fresh random data versions
+//! and the node's configuration version is bumped, so subscribers re-read it.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -1018,6 +1025,93 @@ mod tests {
         assert_eq!(
             table.add(light(EndpointId::new(3))),
             Err(Error::CapacityExceeded { what: "endpoints" })
+        );
+    }
+
+    /// A light with another shape under the same id: one cluster less and a sensor device
+    /// type, so that the cluster list, the device types and the data versions all differ.
+    fn sensor_shaped(id: EndpointId) -> EndpointDescription {
+        EndpointDescription {
+            id,
+            device_types: vec![DeviceType {
+                id: DeviceTypeId::new(0x0015),
+                revision: 2,
+            }],
+            clusters: vec![ClusterDescription {
+                id: ClusterId::new(0x0045),
+                revision: 3,
+                feature_map: 0,
+                attributes: vec![AttributeId::new(0)],
+                accepted_commands: vec![],
+                generated_commands: vec![],
+                events: vec![],
+            }],
+            parent: None,
+            initial_values: vec![(
+                ClusterId::new(0x0045),
+                AttributeId::new(0),
+                Value::Bool(true),
+            )],
+        }
+    }
+
+    /// While an endpoint id is present its shape is fixed: a second description under the
+    /// same id is a duplicate even when it describes other clusters, and the metadata, the
+    /// values and the data versions of the present endpoint stay untouched.
+    #[test]
+    fn re_add_same_id_while_present_is_duplicate() {
+        let mut table = Table::new(AGGREGATOR, 4);
+        table.add(light(LIGHT)).unwrap();
+        let clusters_before = table.endpoints()[2].clusters.as_ptr();
+        let dataver_before = table.dataver(2, ON_OFF.raw()).unwrap();
+
+        assert_eq!(
+            table.add(sensor_shaped(LIGHT)),
+            Err(Error::DuplicateEndpoint(LIGHT))
+        );
+
+        let ids: Vec<u16> = table.endpoints().iter().map(|e| e.id).collect();
+        assert_eq!(ids, vec![0, 1, 2]);
+        assert_eq!(table.endpoints()[2].clusters.as_ptr(), clusters_before);
+        assert_eq!(table.dataver(2, ON_OFF.raw()), Ok(dataver_before));
+        assert_eq!(table.read(2, ON_OFF.raw(), 0), Ok(Value::Bool(false)));
+        assert_eq!(table.read(2, 0x0045, 0), Err(PathError::Cluster));
+        assert_eq!(table.product_ids(), vec![LIGHT]);
+    }
+
+    /// Once removed, an id may come back with any shape: the metadata follows the new
+    /// description, the old values are gone, and the data versions are fresh.
+    #[test]
+    fn re_add_with_different_shape_after_remove_is_fine() {
+        let mut table = Table::new(AGGREGATOR, 4);
+        table.add(light(LIGHT)).unwrap();
+        let light_clusters = table.endpoints()[2].clusters.as_ptr();
+        let shapes_before = table.shapes.cluster_lists.len();
+        table.remove(LIGHT).unwrap();
+
+        let changed = table.add(sensor_shaped(LIGHT)).unwrap();
+        assert_eq!(
+            changed,
+            Changed {
+                endpoints: vec![LIGHT],
+                parts_lists: vec![AGGREGATOR, ROOT_ID],
+            }
+        );
+
+        let endpoint = &table.endpoints()[2];
+        assert_eq!(endpoint.id, 2);
+        assert_ne!(endpoint.clusters.as_ptr(), light_clusters);
+        let clusters: Vec<u32> = endpoint.clusters.iter().map(|c| c.id).collect();
+        assert_eq!(clusters, vec![DESCRIPTOR.raw(), 0x0045]);
+        assert_eq!(endpoint.device_types[0].dtype, 0x0015);
+        assert_eq!(table.shapes.cluster_lists.len(), shapes_before + 1);
+        assert_eq!(table.read(2, 0x0045, 0), Ok(Value::Bool(true)));
+        assert_eq!(table.read(2, ON_OFF.raw(), 0), Err(PathError::Cluster));
+        assert!(table.dataver(2, 0x0045).is_ok());
+        assert_eq!(table.dataver(2, ON_OFF.raw()), Err(PathError::Cluster));
+        assert_eq!(
+            table.read(1, DESCRIPTOR.raw(), 3),
+            Ok(Value::List(vec![Value::U16(2)]))
         );
     }
 
