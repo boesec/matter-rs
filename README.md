@@ -12,8 +12,8 @@ built. It aims to be universal:
 - **Adapters.** Data enters and leaves through adapters. MQTT comes first and is the universal
   route for external programs; topics follow the
   [mqtt-smarthome](https://github.com/mqtt-smarthome/mqtt-smarthome) conventions.
-- **Config first.** The service is configured through one TOML file and runs headless as a system
-  service on Linux and Windows. A web UI is planned but strictly optional: everything it does can
+- **Config first.** The service is configured through one TOML file and runs headless: as a systemd
+  service or in a container on Linux, in the foreground on Linux and Windows. A web UI is planned but strictly optional: everything it does can
   be done through the config file and the command line.
 - **Only what you need.** Parts that are not needed can be left out at compile time through Cargo
   features and switched off at run time, so the same code base fits a server, a small Linux board
@@ -43,7 +43,7 @@ described in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 | Release | Content |
 |---|---|
-| Bridge | A commissionable Matter bridge with bridged devices over IP, fed through the MQTT adapter, configured by file, running as a service on Linux and Windows. |
+| Bridge | A commissionable Matter bridge with bridged devices over IP, fed through the MQTT adapter, configured by file, running as a systemd service or container on Linux and in the foreground on Linux and Windows. |
 | UI | An optional web UI for configuration that writes the same config file. |
 | Controller | Commission and control Matter devices and expose them through adapters such as MQTT. |
 | Later | BLE commissioning, a microcontroller port, OTA updates, more device types and adapters. |
