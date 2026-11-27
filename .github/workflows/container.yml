@@ -1,0 +1,135 @@
+# Container image and systemd unit of the service. The image is built for linux/amd64 and
+# linux/arm64, each on a runner of its own architecture, and smoke-tested there
+# (packaging/container/smoke.sh). It is never pushed: publishing the image is a separate,
+# deliberate step. The systemd unit is checked with `systemd-analyze verify` and run once with
+# its hardening on the runner's systemd.
+name: Container
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: image (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the image (not pushed)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packaging/container/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: false
+          load: true
+          tags: matter-rs:ci-${{ matrix.arch }}
+          cache-from: type=gha,scope=container-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=container-${{ matrix.arch }}
+
+      - name: Show the image
+        run: |
+          docker image inspect matter-rs:ci-${{ matrix.arch }} --format '{{.Os}}/{{.Architecture}} {{.Size}} bytes'
+          docker history matter-rs:ci-${{ matrix.arch }} | head -12
+
+      - name: Smoke test
+        run: bash packaging/container/smoke.sh matter-rs:ci-${{ matrix.arch }}
+
+      # The binary of the amd64 image is what the systemd job installs.
+      - name: Extract the binary
+        if: matrix.arch == 'amd64'
+        run: |
+          id=$(docker create matter-rs:ci-${{ matrix.arch }})
+          docker cp "$id:/usr/bin/matter-rs" ./matter-rs
+          docker rm "$id"
+          ./matter-rs --version
+
+      - name: Upload the binary for the systemd job
+        if: matrix.arch == 'amd64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: matter-rs-linux-amd64
+          path: matter-rs
+          retention-days: 3
+
+  systemd:
+    name: systemd unit
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: matter-rs-linux-amd64
+
+      - name: Install the binary, the user and the configuration
+        run: |
+          set -euxo pipefail
+          sudo install -m 0755 matter-rs /usr/bin/matter-rs
+          sudo useradd --system --home-dir /var/lib/matter-rs --shell /usr/sbin/nologin matter-rs
+          sudo install -d -m 0750 -o root -g matter-rs /etc/matter-rs
+          sudo matter-rs init --output /etc/matter-rs/config.toml
+          sudo chgrp matter-rs /etc/matter-rs/config.toml
+          sudo chmod 0640 /etc/matter-rs/config.toml
+          sudo install -m 0644 packaging/systemd/matter-rs.service /etc/systemd/system/matter-rs.service
+
+      - name: systemd-analyze verify
+        run: |
+          set -euo pipefail
+          systemd-analyze --version | head -1
+          systemd-analyze verify /etc/systemd/system/matter-rs.service 2>&1 | tee verify.log
+          if grep -q "matter-rs.service" verify.log; then
+            echo "::error::systemd-analyze reports problems with the unit"
+            exit 1
+          fi
+
+      - name: Show the exposure of the unit
+        continue-on-error: true
+        run: systemd-analyze security --no-pager /etc/systemd/system/matter-rs.service | tail -n 5
+
+      - name: Start the unit, then stop it with SIGTERM
+        run: |
+          set -euo pipefail
+          sudo systemctl daemon-reload
+          sudo systemctl start matter-rs
+          for _ in $(seq 1 60); do
+            if sudo journalctl -u matter-rs --no-pager | grep -q "node is running"; then
+              break
+            fi
+            sleep 1
+          done
+          systemctl is-active matter-rs
+          sudo journalctl -u matter-rs --no-pager | grep "node is running"
+          sudo ls -la /var/lib/matter-rs
+          sudo systemctl stop matter-rs
+          result=$(systemctl show matter-rs --property=Result --value)
+          status=$(systemctl show matter-rs --property=ExecMainStatus --value)
+          sudo journalctl -u matter-rs --no-pager | tail -n 20
+          echo "result=$result exit status=$status"
+          test "$result" = "success"
+          test "$status" = "0"
+          sudo journalctl -u matter-rs --no-pager | grep -q "matter-rs stopped"

@@ -1,0 +1,72 @@
+# systemd unit of the matter-rs service.
+#
+# Install the binary as /usr/bin/matter-rs, create the system user and the configuration, then
+# enable the unit:
+#
+#   useradd --system --home-dir /var/lib/matter-rs --shell /usr/sbin/nologin matter-rs
+#   install -d -m 0750 -o root -g matter-rs /etc/matter-rs
+#   matter-rs init --output /etc/matter-rs/config.toml
+#   chgrp matter-rs /etc/matter-rs/config.toml && chmod 0640 /etc/matter-rs/config.toml
+#   install -m 0644 matter-rs.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now matter-rs
+#
+# The state (fabrics, keys, counters, endpoint numbers) lives in /var/lib/matter-rs, which
+# systemd creates for the service user (StateDirectory). The log goes to the journal: either
+# through standard error, or directly with `[log] journald = true` in the configuration.
+
+[Unit]
+Description=matter-rs Matter bridge
+Documentation=https://github.com/boesec/matter-rs
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/matter-rs run --config /etc/matter-rs/config.toml
+User=matter-rs
+Group=matter-rs
+# The default state directory of a non-root user is $XDG_STATE_HOME/matter-rs; pointing it at
+# /var/lib makes the default /var/lib/matter-rs, the directory systemd creates below.
+Environment=XDG_STATE_HOME=/var/lib
+StateDirectory=matter-rs
+StateDirectoryMode=0700
+UMask=0077
+
+# Stop: SIGTERM starts the clean shutdown (adapters, bridge, engine, state flushed); the service
+# gives up on its own after 15 seconds, before systemd would kill it.
+KillSignal=SIGTERM
+TimeoutStopSec=20
+Restart=on-failure
+RestartSec=5
+
+# Hardening. Matter needs UDP on port 5540 and multicast DNS on port 5353, both unprivileged
+# ports, so no capability is required; netlink is needed to enumerate the network interfaces,
+# and a Unix socket to reach the journal.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ReadWritePaths=/var/lib/matter-rs
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+
+[Install]
+WantedBy=multi-user.target

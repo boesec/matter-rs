@@ -1,0 +1,7 @@
+# Build context of packaging/container/Dockerfile (BuildKit reads this file because it sits next
+# to the Dockerfile): the sources and manifests only, no build output, logs or local files.
+target/
+**/target/
+.git/
+tests/interop/logs/
+tests/interop-local/logs/
