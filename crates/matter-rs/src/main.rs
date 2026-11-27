@@ -5,12 +5,15 @@
 //! package that sees every crate of the workspace. At its top level it may use a boxed dynamic
 //! error; the library crates each have their own error type.
 //!
-//! Today the command line covers the configuration: writing a starter file, validating a file,
+//! `matter-rs run` runs the node (see the `service` module): the rs-matter engine on its own
+//! thread, the bridge role on it, and the product side on a tokio runtime, until a stop signal.
+//! The other commands cover the configuration: writing a starter file, validating a file,
 //! printing its schema and reference, printing the pairing information of the configured node,
-//! and listing the compiled-in features. Running the service follows in a later step.
+//! and listing the compiled-in features.
 //!
-//! Exit codes: 0 on success (a valid file, warnings allowed), 1 when the command failed (an
-//! invalid or unreadable file, a file that already exists), 2 on wrong usage.
+//! Exit codes: 0 on success (a valid file, warnings allowed; a clean stop of `run`), 1 when the
+//! command failed (an invalid or unreadable file, a file that already exists, a node that could
+//! not start or stop cleanly), 2 on wrong usage.
 
 #![forbid(unsafe_code)]
 #![doc(test(attr(forbid(unsafe_code))))]
@@ -19,6 +22,10 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+
+mod logging;
+mod service;
+mod signals;
 
 use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser, Subcommand};
@@ -31,6 +38,17 @@ use matter_rs_engine_rsmatter::pairing_info_for;
 
 /// Exit code of a command that failed.
 const EXIT_FAILURE: u8 = 1;
+
+/// The long help of `run`: what stops it, where its log goes and its exit codes.
+const RUN_ABOUT: &str = "Run the node from the configuration file until it is stopped.
+
+The node is the Matter engine with the bridge role. When it is not commissioned yet, the log says so; `matter-rs pairing-info` prints the pairing codes, the log never does.
+
+Signals: SIGTERM and SIGINT (Unix), Ctrl-C, Ctrl-Break and closing the console (Windows) stop the node cleanly: the adapters stop, then the bridge, then the engine, which writes its state to the state directory before the process exits. A second stop signal during the shutdown exits at once with code 1.
+
+Log: standard error, as text or JSON lines (`[log] format`), or the systemd journal (`[log] journald = true`, Linux). `[log] level` sets the level; a non-empty RUST_LOG replaces it with a full filter such as `info,rs_matter=debug`.
+
+Exit codes: 0 after a clean stop; 1 when the node could not start (invalid configuration, port in use, engine failure) or did not stop cleanly (second signal, shutdown timeout); 2 on wrong usage.";
 
 /// Matter bridge and controller.
 #[derive(Debug, Parser)]
@@ -76,6 +94,10 @@ enum Command {
         #[arg(value_name = "PATH")]
         path: Option<PathBuf>,
     },
+    /// Run the node until a stop signal (SIGTERM, SIGINT, Ctrl-C); see --help for signals, log
+    /// and exit codes.
+    #[command(long_about = RUN_ABOUT)]
+    Run,
     /// List the features compiled into this binary, one per line.
     Features,
     /// Print the JSON schema of the configuration file.
@@ -112,6 +134,10 @@ fn main() -> ExitCode {
             }
             pairing_info(path.or(cli.config))
         }
+        Command::Run => match config_path(cli.config) {
+            Ok(path) => service::run(&path),
+            Err(message) => fail(&message),
+        },
         Command::Features => {
             for feature in enabled_features() {
                 println!("{feature}");
@@ -137,6 +163,9 @@ fn enabled_features() -> Vec<&'static str> {
     }
     if cfg!(feature = "adapter-mqtt") {
         features.push("adapter-mqtt");
+    }
+    if cfg!(feature = "journald") {
+        features.push("journald");
     }
     features
 }
@@ -344,6 +373,7 @@ mod tests {
             features.contains(&"adapter-mqtt"),
             cfg!(feature = "adapter-mqtt")
         );
+        assert_eq!(features.contains(&"journald"), cfg!(feature = "journald"));
     }
 
     #[test]

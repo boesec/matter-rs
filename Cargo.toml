@@ -63,6 +63,15 @@ log = "0.4"
 # tasks (the adapter supervisor); each crate names the features it needs.
 tokio = { version = "1.54", default-features = false }
 env_logger = "0.11"
+# The service binary: the tokio runtime on the product side (the engine keeps its own thread),
+# signal handling, and the tracing stack its log goes through. `tracing-log` carries the `log`
+# records of the engine and of rs-matter into the same subscriber; `tracing-journald` is the
+# systemd journal output on Linux.
+tokio = { version = "1.54", features = ["rt-multi-thread", "signal", "macros", "sync", "time"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["std", "fmt", "ansi", "env-filter", "json", "tracing-log", "registry"] }
+tracing-log = { version = "0.2", default-features = false, features = ["log-tracer", "std"] }
+tracing-journald = "0.3.2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

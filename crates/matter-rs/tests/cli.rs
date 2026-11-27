@@ -364,6 +364,9 @@ fn features_matches_cfg() {
     if cfg!(feature = "adapter-mqtt") {
         expected.push("adapter-mqtt");
     }
+    if cfg!(feature = "journald") {
+        expected.push("journald");
+    }
     assert_eq!(listed, expected);
 }
 
