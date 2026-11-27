@@ -155,11 +155,14 @@
 //! product's endpoints. Every endpoint description becomes rs-matter metadata: the device
 //! types, and one cluster per described cluster plus the Descriptor cluster, which the engine
 //! serves itself (`DeviceTypeList`, `ServerList`, an empty `ClientList`, `PartsList` with the
-//! direct parts of a composed endpoint or, on the aggregator, every product endpoint). rs-matter
-//! borrows the metadata for the node's lifetime, so it is leaked once per distinct shape (the
-//! ids of a cluster, the cluster list of an endpoint, a device type list) and reused; the leak
-//! is bounded by the number of shapes the product uses, not by the number of endpoints added
-//! over time.
+//! direct parts of a composed endpoint or, on the aggregator, every product endpoint, and
+//! `TagList` with the semantic tags of an endpoint described with tags). An endpoint with tags
+//! gets rs-matter's Descriptor metadata that lists `TagList` and sets the `TagList` feature
+//! (`CLUSTER_TAG_LIST`); an endpoint without tags gets the plain one and never advertises an
+//! empty `TagList`. rs-matter borrows the metadata for the node's lifetime, so it is leaked
+//! once per distinct shape (the ids of a cluster, the cluster list of an endpoint, a device
+//! type list) and reused; the leak is bounded by the number of shapes the product uses, not by
+//! the number of endpoints added over time.
 //!
 //! For clusters rs-matter ships generated metadata for (the lighting, sensor, switch, label,
 //! power, bridged-device and several other clusters), the described attributes, commands and

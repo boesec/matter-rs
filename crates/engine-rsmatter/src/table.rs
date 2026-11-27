@@ -9,7 +9,10 @@
 //! shape costs nothing new.
 //!
 //! The table holds the root endpoint (rs-matter's own system clusters), the aggregator and the
-//! product's endpoints, each with a Descriptor cluster the engine serves itself.
+//! product's endpoints, each with a Descriptor cluster the engine serves itself. An endpoint
+//! described with semantic tags gets rs-matter's Descriptor metadata with `TagList` and the
+//! `TagList` feature; every other endpoint gets the plain one, so that `TagList` is never
+//! advertised empty.
 //!
 //! An endpoint id keeps its shape while it is present: a second `add` of a present id is a
 //! duplicate whatever its description says. Once removed, the id may come back with any shape.
@@ -22,10 +25,10 @@ use std::collections::{BTreeMap, HashMap};
 
 use matter_rs_engine::{
     AttributeId, AttributeValue, ClusterId, EndpointDescription, EndpointId, Error, EventId,
-    ROOT_ENDPOINT, Value,
+    ROOT_ENDPOINT, Value, descriptor,
 };
 use rs_matter::dm::clusters::decl;
-use rs_matter::dm::clusters::desc::{ClusterHandler as _, DescHandler};
+use rs_matter::dm::clusters::desc::{CLUSTER_TAG_LIST, ClusterHandler as _, DescHandler};
 use rs_matter::dm::devices::DEV_TYPE_AGGREGATOR;
 use rs_matter::dm::{
     ACCEPTED_COMMAND_LIST, ATTRIBUTE_LIST, Access, Attribute, CLUSTER_REVISION, Cluster, Command,
@@ -43,6 +46,8 @@ const SERVER_LIST: AttributeId = AttributeId::new(0x0001);
 const CLIENT_LIST: AttributeId = AttributeId::new(0x0002);
 /// `Descriptor::PartsList`; the one attribute of an ancestor that an add or a removal changes.
 pub(crate) const PARTS_LIST: AttributeId = AttributeId::new(0x0003);
+/// `Descriptor::TagList`, served for endpoints described with semantic tags.
+const TAG_LIST: AttributeId = descriptor::TAG_LIST;
 
 /// What an add or a removal changed, for the interaction model's subscribers.
 ///
@@ -149,7 +154,8 @@ struct ClusterShape {
 #[derive(Default)]
 struct ShapeCache {
     clusters: HashMap<ClusterShape, Cluster<'static>>,
-    cluster_lists: HashMap<Vec<ClusterShape>, &'static [Cluster<'static>]>,
+    /// Keyed by whether the Descriptor carries `TagList`, and the product's cluster shapes.
+    cluster_lists: HashMap<(bool, Vec<ClusterShape>), &'static [Cluster<'static>]>,
     device_types: HashMap<Vec<(u16, u16)>, &'static [DeviceType]>,
 }
 
@@ -196,14 +202,26 @@ impl ShapeCache {
         cluster
     }
 
-    fn cluster_list(&mut self, shapes: Vec<ClusterShape>) -> &'static [Cluster<'static>] {
-        if let Some(list) = self.cluster_lists.get(&shapes) {
+    /// The cluster list of an endpoint: the Descriptor (with `TagList` when `tagged`), then the
+    /// product's clusters.
+    fn cluster_list(
+        &mut self,
+        tagged: bool,
+        shapes: Vec<ClusterShape>,
+    ) -> &'static [Cluster<'static>] {
+        let key = (tagged, shapes);
+        if let Some(list) = self.cluster_lists.get(&key) {
             return list;
         }
-        let mut clusters = vec![DescHandler::CLUSTER];
-        clusters.extend(shapes.iter().cloned().map(|shape| self.cluster(shape)));
+        let descriptor = if tagged {
+            CLUSTER_TAG_LIST
+        } else {
+            DescHandler::CLUSTER
+        };
+        let mut clusters = vec![descriptor];
+        clusters.extend(key.1.iter().cloned().map(|shape| self.cluster(shape)));
         let list: &'static [Cluster<'static>] = Vec::leak(clusters);
-        self.cluster_lists.insert(shapes, list);
+        self.cluster_lists.insert(key, list);
         list
     }
 
@@ -326,6 +344,9 @@ impl Table {
         }
         if description.device_types.is_empty() {
             return Err(invalid(String::from("no device type")));
+        }
+        if let Some(problem) = description.tag_problem() {
+            return Err(invalid(problem));
         }
         for device_type in &description.device_types {
             if u16::try_from(device_type.id.raw()).is_err() {
@@ -451,7 +472,9 @@ impl Table {
                 (dtype, device_type.revision)
             })
             .collect();
-        let clusters = self.shapes.cluster_list(shapes);
+        let clusters = self
+            .shapes
+            .cluster_list(!description.tags.is_empty(), shapes);
         let device_types = self.shapes.device_types(device_types);
 
         let id = description.id;
@@ -722,6 +745,11 @@ impl Table {
                     .collect(),
             ),
             CLIENT_LIST => Value::List(Vec::new()),
+            TAG_LIST => self
+                .product
+                .get(&endpoint)
+                .and_then(|e| e.description.tag_list())
+                .ok_or(PathError::Attribute)?,
             PARTS_LIST => {
                 let parts: Vec<Value> = if endpoint == self.aggregator {
                     self.product.keys().map(|id| Value::U16(id.raw())).collect()
@@ -737,6 +765,37 @@ impl Table {
             _ => return Err(PathError::Attribute),
         };
         Ok(value)
+    }
+
+    /// The value a client would read for an attribute of a served endpoint, global attributes
+    /// included, or `None` when there is none: the in-process view the engine-agnostic suite
+    /// reads through. Global attributes come from the cluster metadata, as rs-matter serves
+    /// them; only `FeatureMap` and `AttributeList` are answered, the others are not needed.
+    #[cfg(test)]
+    pub(crate) fn reported(
+        &self,
+        endpoint: EndpointId,
+        cluster: ClusterId,
+        attribute: AttributeId,
+    ) -> Option<Value> {
+        const FEATURE_MAP_ID: u32 = 0xFFFC;
+        const ATTRIBUTE_LIST_ID: u32 = 0xFFFB;
+        if attribute.is_global() {
+            let node_endpoint = self.endpoints.iter().find(|e| e.id == endpoint.raw())?;
+            if endpoint != self.aggregator && !self.product.contains_key(&endpoint) {
+                return None;
+            }
+            let metadata = node_endpoint.cluster(cluster.raw())?;
+            return match attribute.raw() {
+                FEATURE_MAP_ID => Some(Value::U32(metadata.feature_map)),
+                ATTRIBUTE_LIST_ID => Some(Value::List(
+                    metadata.attributes().map(|a| Value::U32(a.id)).collect(),
+                )),
+                _ => None,
+            };
+        }
+        self.read(endpoint.raw(), cluster.raw(), attribute.raw())
+            .ok()
     }
 
     /// Checks that a write may reach the product: the endpoint is the product's and lists the
@@ -797,7 +856,7 @@ impl Table {
 mod tests {
     use matter_rs_engine::{
         AttributeId, ClusterDescription, ClusterId, CommandId, DeviceType, DeviceTypeId,
-        EndpointDescription, EndpointId, Error, EventId, Value, bridged_device,
+        EndpointDescription, EndpointId, Error, EventId, SemanticTag, Value, bridged_device,
     };
     use rs_matter::dm::Metadata as _;
 
@@ -848,6 +907,7 @@ mod tests {
                     Value::List(vec![Value::U8(1), Value::U8(2)]),
                 ),
             ],
+            tags: vec![],
         }
     }
 
@@ -963,6 +1023,74 @@ mod tests {
         }
     }
 
+    /// An endpoint with semantic tags gets rs-matter's Descriptor with `TagList` and the
+    /// `TagList` feature, and `TagList` reads the tags; an untagged endpoint of the same shape
+    /// next to it keeps the plain Descriptor, because the cluster list cache tells them apart.
+    #[test]
+    fn tagged_descriptor_serves_the_tag_list() {
+        const TAG_LIST: u32 = 0x0004;
+        let mut table = Table::new(AGGREGATOR, 4);
+        let tagged = light(LIGHT)
+            .with_tag(SemanticTag::standard(0x07, 1))
+            .with_tag(SemanticTag::standard(0x07, 2).with_label("Left"));
+        table.add(tagged.clone()).unwrap();
+        table.add(light(EndpointId::new(3))).unwrap();
+
+        let descriptor_of = |endpoint: u16| {
+            let node_endpoint = table.endpoints().iter().find(|e| e.id == endpoint).unwrap();
+            let descriptor = node_endpoint.cluster(DESCRIPTOR.raw()).unwrap();
+            let attributes: Vec<u32> = descriptor.attributes().map(|a| a.id).collect();
+            (descriptor.feature_map, attributes)
+        };
+        let (features, attributes) = descriptor_of(2);
+        assert_eq!(features, 1, "the TagList feature is bit 0");
+        assert!(attributes.contains(&TAG_LIST), "{attributes:?}");
+        assert_eq!(
+            table.read(2, DESCRIPTOR.raw(), TAG_LIST),
+            Ok(tagged.tag_list().unwrap())
+        );
+        assert_eq!(
+            table.reported(LIGHT, DESCRIPTOR, AttributeId::new(0xFFFC)),
+            Some(Value::U32(1))
+        );
+
+        let (features, attributes) = descriptor_of(3);
+        assert_eq!(features, 0);
+        assert!(!attributes.contains(&TAG_LIST), "{attributes:?}");
+        assert_eq!(
+            table.read(3, DESCRIPTOR.raw(), TAG_LIST),
+            Err(PathError::Attribute)
+        );
+        assert_eq!(table.shapes.cluster_lists.len(), 2);
+    }
+
+    /// Tags the Descriptor cannot carry are refused with the reason; tags on the root endpoint
+    /// are refused with the root endpoint.
+    #[test]
+    fn invalid_tags_are_refused() {
+        let mut table = Table::new(AGGREGATOR, 4);
+        let mut seven = light(LIGHT);
+        for tag in 0..7 {
+            seven = seven.with_tag(SemanticTag::standard(0x07, tag));
+        }
+        assert!(matches!(
+            table.add(seven),
+            Err(Error::InvalidDescription { reason, .. }) if reason.contains("at most 6")
+        ));
+        let long_label =
+            light(LIGHT).with_tag(SemanticTag::standard(0x07, 1).with_label("x".repeat(65)));
+        assert!(matches!(
+            table.add(long_label),
+            Err(Error::InvalidDescription { reason, .. }) if reason.contains("label")
+        ));
+        let root = light(ROOT_ID).with_tag(SemanticTag::standard(0x07, 1));
+        assert!(matches!(
+            table.add(root),
+            Err(Error::InvalidDescription { reason, .. }) if reason.contains("root")
+        ));
+        assert!(table.product_ids().is_empty());
+    }
+
     #[test]
     fn shapes_are_shared_between_endpoints() {
         let mut table = Table::new(AGGREGATOR, 8);
@@ -1076,6 +1204,7 @@ mod tests {
                 AttributeId::new(0),
                 Value::Bool(true),
             )],
+            tags: vec![],
         }
     }
 

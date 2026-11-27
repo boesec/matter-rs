@@ -114,6 +114,14 @@ pub(crate) enum Request {
     PairingInfo(Reply<Result<PairingInfo, Error>>),
     FactoryReset(Reply<Result<(), Error>>),
     Stop(Reply<Result<(), Error>>),
+    /// The value a client would read, from the table; the in-process view of the tests.
+    #[cfg(test)]
+    Read {
+        endpoint: EndpointId,
+        cluster: ClusterId,
+        attribute: matter_rs_engine::AttributeId,
+        reply: Reply<Result<Option<Value>, Error>>,
+    },
 }
 
 impl Request {
@@ -133,6 +141,8 @@ impl Request {
             Self::CommissioningState(reply) => reply.complete(Err(error)),
             Self::Fabrics(reply) => reply.complete(Err(error)),
             Self::PairingInfo(reply) => reply.complete(Err(error)),
+            #[cfg(test)]
+            Self::Read { reply, .. } => reply.complete(Err(error)),
         }
     }
 }

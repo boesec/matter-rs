@@ -3,7 +3,7 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use matter_rs_engine::contract::{CASES, EngineUnderTest};
 use matter_rs_engine::testing::FakeEngine;
@@ -14,16 +14,36 @@ use matter_rs_engine::{
     Running, Storage, Value, Window,
 };
 
-/// The fake engine as the suite sees it.
-struct FakeUnderTest;
+/// The fake engine as the suite sees it; it keeps the engine it handed out last so that
+/// [`EngineUnderTest::read_attribute`] reads through the fake's `read` hook.
+#[derive(Default)]
+struct FakeUnderTest {
+    last: Mutex<Option<FakeEngine>>,
+}
 
 impl EngineUnderTest for FakeUnderTest {
     fn engine(&self) -> Box<dyn Engine> {
-        Box::new(FakeEngine::new())
+        let fake = FakeEngine::new();
+        *self.last.lock().unwrap_or_else(PoisonError::into_inner) = Some(fake.clone());
+        Box::new(fake)
+    }
+
+    fn read_attribute(
+        &self,
+        endpoint: EndpointId,
+        cluster: ClusterId,
+        attribute: AttributeId,
+    ) -> Option<Value> {
+        self.last
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .expect("an engine was handed out")
+            .read(endpoint, cluster, attribute)
     }
 }
 
-matter_rs_engine::contract_tests!(FakeUnderTest);
+matter_rs_engine::contract_tests!(FakeUnderTest::default());
 
 /// The suite names every case once, and the table and the macro agree on the names.
 #[test]
@@ -50,6 +70,7 @@ fn every_case_is_in_the_table() {
         "respond_unknown_correlation_rejected",
         "set_reachable_on_bridged_endpoint",
         "errors_never_contain_the_passcode",
+        "tags_are_served_on_the_descriptor",
     ] {
         assert!(names.contains(&expected), "case {expected} is missing");
     }

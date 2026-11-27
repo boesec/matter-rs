@@ -17,12 +17,15 @@ use alloc::vec::Vec;
 use core::time::Duration;
 
 use super::{EngineUnderTest, RecordingStorage, assert_error, next_event, run, start_on, stop};
-use crate::description::{ClusterDescription, DeviceType, EndpointDescription};
+use crate::description::{ClusterDescription, DeviceType, EndpointDescription, SemanticTag};
 use crate::engine::{
     AttributeValue, CommissioningState, Correlation, Event, Response, Window, bridged_device,
+    descriptor,
 };
 use crate::error::Error;
-use crate::id::{AttributeId, ClusterId, CommandId, DeviceTypeId, EndpointId, EventId};
+use crate::id::{
+    AttributeId, ClusterId, CommandId, DeviceTypeId, EndpointId, EventId, ROOT_ENDPOINT, VendorId,
+};
 use crate::identity::{NetworkConfig, NodeRole};
 use crate::secret::{REDACTED, Secret};
 use crate::storage::Storage;
@@ -39,6 +42,10 @@ const ON_OFF_LIGHT: DeviceTypeId = DeviceTypeId::new(0x0100);
 const NODE_LABEL: AttributeId = AttributeId::new(0x0005);
 /// A global attribute id (`ClusterRevision`), which a description must not list.
 const CLUSTER_REVISION: AttributeId = AttributeId::new(0xFFFD);
+/// The global `FeatureMap` attribute.
+const FEATURE_MAP: AttributeId = AttributeId::new(0xFFFC);
+/// The `Common Number` semantic tag namespace of the Matter specification.
+const COMMON_NUMBER: u8 = 0x07;
 
 fn on_off_cluster() -> ClusterDescription {
     ClusterDescription {
@@ -94,6 +101,7 @@ fn light(id: EndpointId) -> EndpointDescription {
             (ON_OFF, ON_OFF_ATTRIBUTE, Value::Bool(false)),
             (LEVEL, CURRENT_LEVEL, Value::U8(0)),
         ],
+        tags: vec![],
     }
 }
 
@@ -928,5 +936,121 @@ pub fn errors_never_contain_the_passcode(eut: &dyn EngineUnderTest) {
     );
 
     let node = start_on(eut, &*engine, eut.storage());
+    stop(eut, &*node);
+}
+
+/// Rule: the engine serves the Descriptor of every endpoint, the semantic tags included.
+///
+/// An endpoint described with tags reports them as its Descriptor `TagList`, in order and
+/// encoded as `SemanticTagStruct`, and sets the `TagList` feature in the Descriptor's
+/// `FeatureMap`; an endpoint without tags reports no `TagList` and leaves the feature clear.
+/// Tags are allowed on an endpoint directly under the aggregator and on a part of a composed
+/// device. A description with tags for the root endpoint, with more than
+/// [`SemanticTag::MAX_TAGS`] tags or with a label longer than
+/// [`SemanticTag::MAX_LABEL_LENGTH`] bytes is [`Error::InvalidDescription`], and nothing is
+/// added. A removed endpoint reports nothing.
+pub fn tags_are_served_on_the_descriptor(eut: &dyn EngineUnderTest) {
+    let engine = eut.engine();
+    let node = start_on(eut, &*engine, eut.storage());
+    let read = |endpoint, attribute| eut.read_attribute(endpoint, descriptor::CLUSTER, attribute);
+    let feature_map = |endpoint| match read(endpoint, FEATURE_MAP) {
+        Some(Value::U32(bits)) => bits,
+        other => panic!("the Descriptor FeatureMap of endpoint {endpoint} is {other:?}"),
+    };
+
+    let parent = light(LIGHT);
+    let first = EndpointId::new(3);
+    let second = EndpointId::new(4);
+    let untagged = EndpointId::new(5);
+    let first_part = EndpointDescription {
+        parent: Some(LIGHT),
+        ..light(first)
+    }
+    .with_tag(SemanticTag::standard(COMMON_NUMBER, 1));
+    let second_part = EndpointDescription {
+        parent: Some(LIGHT),
+        ..light(second)
+    }
+    .with_tag(SemanticTag::standard(COMMON_NUMBER, 2).with_label("Left"))
+    .with_tag(SemanticTag {
+        manufacturer_code: Some(VendorId::new(0xFFF1)),
+        namespace: 0x80,
+        tag: 9,
+        label: None,
+    });
+    let top_level = light(untagged).with_tag(SemanticTag::standard(COMMON_NUMBER, 5));
+    run(eut, node.add_endpoint(parent)).unwrap();
+    run(eut, node.add_endpoint(first_part.clone())).unwrap();
+    run(eut, node.add_endpoint(second_part.clone())).unwrap();
+
+    for part in [&first_part, &second_part] {
+        assert_eq!(
+            read(part.id, descriptor::TAG_LIST),
+            part.tag_list(),
+            "the TagList of endpoint {}",
+            part.id
+        );
+        assert_ne!(
+            feature_map(part.id) & descriptor::FEATURE_TAG_LIST,
+            0,
+            "the TagList feature of endpoint {}",
+            part.id
+        );
+    }
+    assert_eq!(
+        read(second, descriptor::TAG_LIST),
+        Some(Value::List(vec![
+            Value::Struct(vec![
+                (descriptor::TAG_FIELD_MANUFACTURER_CODE, Value::Null),
+                (descriptor::TAG_FIELD_NAMESPACE, Value::U8(COMMON_NUMBER)),
+                (descriptor::TAG_FIELD_TAG, Value::U8(2)),
+                (descriptor::TAG_FIELD_LABEL, Value::from("Left")),
+            ]),
+            Value::Struct(vec![
+                (descriptor::TAG_FIELD_MANUFACTURER_CODE, Value::U16(0xFFF1)),
+                (descriptor::TAG_FIELD_NAMESPACE, Value::U8(0x80)),
+                (descriptor::TAG_FIELD_TAG, Value::U8(9)),
+                (descriptor::TAG_FIELD_LABEL, Value::Null),
+            ]),
+        ])),
+        "the tags are encoded as SemanticTagStruct, in order"
+    );
+    // The parent has no tags: no TagList, no feature.
+    assert_eq!(read(LIGHT, descriptor::TAG_LIST), None);
+    assert_eq!(feature_map(LIGHT) & descriptor::FEATURE_TAG_LIST, 0);
+
+    // Refused descriptions change nothing.
+    let invalid = |description: EndpointDescription, what: &str, needle: &str| {
+        let endpoint = description.id;
+        assert_error(&run(eut, node.add_endpoint(description)), what, |error| {
+            matches!(error, Error::InvalidDescription { endpoint: e, reason }
+                if *e == endpoint && reason.contains(needle))
+        });
+    };
+    invalid(
+        light(ROOT_ENDPOINT).with_tag(SemanticTag::standard(COMMON_NUMBER, 1)),
+        "tags on the root endpoint",
+        "root",
+    );
+    let mut seven = light(untagged);
+    for tag in 0..7 {
+        seven = seven.with_tag(SemanticTag::standard(COMMON_NUMBER, tag));
+    }
+    invalid(seven, "seven semantic tags", "at most 6");
+    invalid(
+        light(untagged)
+            .with_tag(SemanticTag::standard(COMMON_NUMBER, 1).with_label("x".repeat(65))),
+        "a label of 65 bytes",
+        "label",
+    );
+    assert_eq!(read(untagged, descriptor::TAG_LIST), None);
+
+    // The id is still free; a tagged endpoint directly under the aggregator is fine.
+    run(eut, node.add_endpoint(top_level.clone())).unwrap();
+    assert_eq!(read(untagged, descriptor::TAG_LIST), top_level.tag_list());
+
+    run(eut, node.remove_endpoint(LIGHT)).unwrap();
+    assert_eq!(read(first, descriptor::TAG_LIST), None);
+    assert_eq!(read(second, descriptor::TAG_LIST), None);
     stop(eut, &*node);
 }

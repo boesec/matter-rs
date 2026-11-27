@@ -542,6 +542,13 @@ async fn handle_request<C, B, T, K, const NS: usize, const NE: usize>(
             // Handled by the service loop; a stop that lands here would be a logic error.
             reply.complete(Err(Error::NotRunning));
         }
+        #[cfg(test)]
+        Request::Read {
+            endpoint,
+            cluster,
+            attribute,
+            reply,
+        } => reply.complete(Ok(table.borrow().reported(endpoint, cluster, attribute))),
     }
     let _ = shared;
 }
@@ -694,6 +701,7 @@ mod tests {
             }],
             parent,
             initial_values: vec![(ON_OFF, AttributeId::new(0), Value::Bool(false))],
+            tags: vec![],
         }
     }
 

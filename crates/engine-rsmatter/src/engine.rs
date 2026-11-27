@@ -80,6 +80,30 @@ impl RsMatterEngine {
         self
     }
 
+    /// The value a client would read for an attribute of the running node, from the engine
+    /// thread's table; `None` when there is none or no node runs. For in-process tests.
+    #[cfg(test)]
+    pub(crate) fn read_attribute(
+        &self,
+        endpoint: matter_rs_engine::EndpointId,
+        cluster: matter_rs_engine::ClusterId,
+        attribute: matter_rs_engine::AttributeId,
+    ) -> Option<matter_rs_engine::Value> {
+        let shared = self.lock().shared.clone()?;
+        let (reply, future) = Reply::new();
+        shared
+            .enqueue(Request::Read {
+                endpoint,
+                cluster,
+                attribute,
+                reply,
+            })
+            .ok()?;
+        matter_rs_engine::testing::block_on(future)
+            .and_then(Result::ok)
+            .flatten()
+    }
+
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }

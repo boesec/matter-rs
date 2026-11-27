@@ -8,9 +8,12 @@
 //!
 //! The suite covers what can be shown in process, without a Matter client: the node lifecycle,
 //! the endpoint rules, attribute and event paths, commissioning windows, factory reset, the
-//! storage namespace and the handling of secrets. Everything a client sees (reads, subscription
-//! reports, the status of a command or a write on the wire) belongs to the client-driven
-//! scenarios of the interop harness and is not here.
+//! storage namespace and the handling of secrets. Where a rule is about what the engine serves
+//! itself (the Descriptor's semantic tags), the case looks at it through
+//! [`EngineUnderTest::read_attribute`], an in-process view each implementation provides.
+//! Everything else a client sees (reads over the wire, subscription reports, the status of a
+//! command or a write) belongs to the client-driven scenarios of the interop harness and is not
+//! here.
 //!
 //! # Running the suite against an engine
 //!
@@ -19,6 +22,8 @@
 //!    discriminator `3840`, an ephemeral port on every interface, test attestation, a fresh
 //!    in-memory storage, aggregator endpoint 1, a ten-second timeout for events) that an
 //!    implementation overrides where it must, for example to name the network interface.
+//!    [`EngineUnderTest::read_attribute`] has no useful default: the cases that look at served
+//!    values fail until the implementation provides it.
 //! 2. Expand [`contract_tests!`] with an expression that builds the implementation. The macro
 //!    expands to one `#[test]` per case, named like the case, so that a failing run names the
 //!    rule that was broken.
@@ -71,15 +76,16 @@ pub use cases::{
     remove_cascades_to_composed_parts, respond_unknown_correlation_rejected,
     second_start_is_already_running, set_attribute_on_unknown_path_rejected,
     set_attributes_is_atomic, set_reachable_on_bridged_endpoint, start_stop_restart,
-    stop_ends_event_stream, unknown_parent_rejected,
+    stop_ends_event_stream, tags_are_served_on_the_descriptor, unknown_parent_rejected,
 };
 
 use crate::engine::{Engine, Event, Running};
 use crate::error::Error;
-use crate::id::{EndpointId, ProductId, VendorId};
+use crate::id::{AttributeId, ClusterId, EndpointId, ProductId, VendorId};
 use crate::identity::{Attestation, NetworkConfig, NodeIdentity, NodeRole};
 use crate::secret::Secret;
 use crate::storage::{MemoryStorage, Storage, StorageError};
+use crate::value::Value;
 use core::fmt;
 
 /// The passcode of the suite's default identity: the development passcode every Matter SDK
@@ -145,6 +151,30 @@ pub trait EngineUnderTest: Sync {
     fn timeout(&self) -> Duration {
         Duration::from_secs(10)
     }
+
+    /// The value the node of the engine [`engine`](EngineUnderTest::engine) returned last
+    /// reports for an attribute, or `None` when it reports none (no such endpoint, cluster or
+    /// attribute).
+    ///
+    /// This is the in-process view of what a client would read, used by the cases about what
+    /// the engine serves itself: the Descriptor's `TagList` and `FeatureMap`. An implementation
+    /// answers from the state its reads are answered from. The default panics, so that an
+    /// implementation that does not provide the view fails those cases instead of passing them
+    /// unchecked.
+    ///
+    /// # Panics
+    ///
+    /// The default always panics.
+    fn read_attribute(
+        &self,
+        endpoint: EndpointId,
+        cluster: ClusterId,
+        attribute: AttributeId,
+    ) -> Option<Value> {
+        panic!(
+            "this engine under test offers no in-process read of endpoint {endpoint}, cluster              {cluster}, attribute {attribute}; implement EngineUnderTest::read_attribute"
+        )
+    }
 }
 
 /// One case of the suite: a function that panics when the engine breaks the rule it pins.
@@ -209,6 +239,10 @@ pub const CASES: &[(&str, Case)] = &[
         "errors_never_contain_the_passcode",
         errors_never_contain_the_passcode,
     ),
+    (
+        "tags_are_served_on_the_descriptor",
+        tags_are_served_on_the_descriptor,
+    ),
 ];
 
 /// Expands to one `#[test]` function per case of the engine contract suite.
@@ -245,6 +279,7 @@ macro_rules! contract_tests {
             respond_unknown_correlation_rejected,
             set_reachable_on_bridged_endpoint,
             errors_never_contain_the_passcode,
+            tags_are_served_on_the_descriptor,
         }
     };
     (@cases $eut:expr; $($case:ident),* $(,)?) => {
@@ -466,7 +501,7 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), CASES.len(), "every case is listed once");
-        assert_eq!(CASES.len(), 20);
+        assert_eq!(CASES.len(), 21);
     }
 
     #[test]

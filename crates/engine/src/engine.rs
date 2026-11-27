@@ -48,7 +48,14 @@
 //!   implementation; an operation that would exceed one fails with [`Error::CapacityExceeded`]
 //!   and changes nothing.
 //!
+//! - **The Descriptor is the engine's.** The engine serves the Descriptor cluster of every
+//!   endpoint from the description: device types, servers, parts and the semantic tags of
+//!   [`EndpointDescription::tags`] as `TagList`, with the `TagList` feature set exactly when the
+//!   endpoint has tags. Tags are refused on the root endpoint, which the product never
+//!   describes.
+//!
 //! [`EndpointDescription::initial_values`]: crate::EndpointDescription::initial_values
+//! [`EndpointDescription::tags`]: crate::EndpointDescription::tags
 //! [`Storage`]: crate::Storage
 
 use alloc::boxed::Box;
@@ -61,6 +68,8 @@ use core::pin::Pin;
 use core::time::Duration;
 
 use crate::description::EndpointDescription;
+#[cfg(doc)]
+use crate::description::SemanticTag;
 use crate::error::Error;
 use crate::id::{AttributeId, ClusterId, CommandId, EndpointId, EventId, FabricIndex, VendorId};
 use crate::identity::{Attestation, NetworkConfig, NodeIdentity, NodeRole};
@@ -123,8 +132,9 @@ pub trait Running: Send + Sync {
     /// exist, [`Error::InvalidDescription`] when the description is inconsistent (no device
     /// type, the root endpoint id, a listed attribute without an initial value, a value for an
     /// attribute that is not listed, a global attribute in the attribute list, a cluster listed
-    /// twice), [`Error::CapacityExceeded`] when the engine has no room for another endpoint,
-    /// [`Error::NotRunning`] after `stop`.
+    /// twice, more than [`SemanticTag::MAX_TAGS`] semantic tags, a tag label longer than
+    /// [`SemanticTag::MAX_LABEL_LENGTH`] bytes), [`Error::CapacityExceeded`] when the engine
+    /// has no room for another endpoint, [`Error::NotRunning`] after `stop`.
     fn add_endpoint(&self, description: EndpointDescription) -> BoxFuture<'_, Result<(), Error>>;
 
     /// Removes an endpoint and every endpoint composed under it.
@@ -506,7 +516,8 @@ impl Capabilities {
 /// The ids of the Bridged Device Basic Information cluster that
 /// [`Running::set_reachable`] uses.
 ///
-/// They are the only cluster ids the facade knows; the convenience exists because every
+/// Together with the Descriptor ids of [`descriptor`] they are the only cluster ids the facade
+/// knows; the convenience exists because every
 /// bridged endpoint carries this cluster and the pair "set `Reachable`, emit
 /// `ReachableChanged`" is the one cluster rule a bridge needs from every engine.
 pub mod bridged_device {
@@ -521,6 +532,33 @@ pub mod bridged_device {
     pub const REACHABLE_CHANGED: EventId = EventId::new(0x0003);
     /// The tag of the `ReachableNewValue` field of `ReachableChanged`.
     pub const REACHABLE_NEW_VALUE_TAG: u64 = 0;
+}
+
+/// The ids of the Descriptor cluster an engine needs to serve the semantic tags of
+/// [`EndpointDescription::tags`].
+///
+/// The engine serves the Descriptor cluster of every endpoint itself; the product only
+/// supplies the tags. With tags, `TagList` is listed and the `TagList` feature is set in the
+/// Descriptor's `FeatureMap`. Ids from the Descriptor cluster and the `SemanticTagStruct` of
+/// the Matter 1.6 data model (`data_model/1.6/clusters/Descriptor-Cluster.xml` and
+/// `globals/Structs.xml` in <https://github.com/project-chip/connectedhomeip>).
+pub mod descriptor {
+    use crate::id::{AttributeId, ClusterId};
+
+    /// The Descriptor cluster.
+    pub const CLUSTER: ClusterId = ClusterId::new(0x001D);
+    /// The `TagList` attribute: a list of `SemanticTagStruct`.
+    pub const TAG_LIST: AttributeId = AttributeId::new(0x0004);
+    /// The `TagList` feature: bit 0 of the Descriptor's `FeatureMap`.
+    pub const FEATURE_TAG_LIST: u32 = 0x0001;
+    /// Tag of the `MfgCode` field of `SemanticTagStruct`.
+    pub const TAG_FIELD_MANUFACTURER_CODE: u64 = 0;
+    /// Tag of the `NamespaceID` field of `SemanticTagStruct`.
+    pub const TAG_FIELD_NAMESPACE: u64 = 1;
+    /// Tag of the `Tag` field of `SemanticTagStruct`.
+    pub const TAG_FIELD_TAG: u64 = 2;
+    /// Tag of the `Label` field of `SemanticTagStruct`.
+    pub const TAG_FIELD_LABEL: u64 = 3;
 }
 
 #[cfg(test)]

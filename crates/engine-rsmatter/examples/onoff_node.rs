@@ -429,6 +429,7 @@ impl Device {
                 .flat_map(|cluster| cluster.attributes.iter())
                 .map(|a| (a.cluster, a.attribute, a.initial.clone()))
                 .collect(),
+            tags: vec![],
         }
     }
 

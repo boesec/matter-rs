@@ -107,6 +107,7 @@ fn light(id: EndpointId) -> EndpointDescription {
             (ON_OFF, ON_OFF_ATTRIBUTE, Value::Bool(false)),
             (LEVEL, CURRENT_LEVEL, Value::U8(0)),
         ],
+        tags: vec![],
     }
 }
 

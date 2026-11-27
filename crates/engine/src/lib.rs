@@ -15,7 +15,7 @@
 //! - **Ids** ([`EndpointId`], [`ClusterId`], [`AttributeId`], ...) and the dynamic [`Value`]
 //!   that maps one to one onto Matter TLV, with conversions from and to Rust types.
 //! - **Descriptions** of what the product puts on the node: [`DeviceType`],
-//!   [`ClusterDescription`], [`EndpointDescription`].
+//!   [`ClusterDescription`], [`EndpointDescription`] with its [`SemanticTag`]s.
 //! - **Identity**: [`NodeIdentity`], [`NetworkConfig`], [`Attestation`], [`NodeRole`].
 //! - **The storage contract** [`Storage`], with [`DirectoryStorage`] and [`MemoryStorage`]
 //!   behind the `std` feature.
@@ -107,6 +107,7 @@
 //!     }],
 //!     parent: None,
 //!     initial_values: vec![(ON_OFF, ON_OFF_ATTRIBUTE, Value::Bool(false))],
+//!     tags: vec![],
 //! }))
 //! .expect("the endpoint is added");
 //! assert_eq!(fake.read(LIGHT, ON_OFF, ON_OFF_ATTRIBUTE), Some(Value::Bool(false)));
@@ -184,10 +185,10 @@ mod storage;
 pub mod testing;
 mod value;
 
-pub use description::{ClusterDescription, DeviceType, EndpointDescription};
+pub use description::{ClusterDescription, DeviceType, EndpointDescription, SemanticTag};
 pub use engine::{
     AttributeValue, BoxFuture, Capabilities, CommissioningState, Correlation, Engine, Event,
-    FabricInfo, PairingInfo, Response, Running, StopReason, Window, bridged_device,
+    FabricInfo, PairingInfo, Response, Running, StopReason, Window, bridged_device, descriptor,
 };
 pub use error::Error;
 pub use id::{
