@@ -19,3 +19,10 @@ path = "fuzz_targets/noop.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "always_panics"
+path = "fuzz_targets/always_panics.rs"
+test = false
+doc = false
+bench = false
