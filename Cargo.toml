@@ -59,6 +59,9 @@ socket2 = { version = "0.6", features = ["all"] }
 if-addrs = "0.15"
 rand = { version = "0.10", features = ["std", "std_rng", "thread_rng"] }
 log = "0.4"
+# The runtime of the product side. Library crates depend on it only where they do I/O or spawn
+# tasks (the adapter supervisor); each crate names the features it needs.
+tokio = { version = "1.54", default-features = false }
 env_logger = "0.11"
 
 [workspace.lints.rust]
