@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Sequence
 from pathlib import Path
 
 from harness.config import DutSpec
@@ -121,9 +122,16 @@ class EngineDut:
         """Wait for an ``event ...`` line matching ``pattern`` (a regular expression)."""
         return self._running().wait_for(pattern, timeout, since)
 
-    def add(self, endpoint: int, device_type: str, parent: int | None = None) -> None:
-        line = f"add {endpoint} {device_type}" + (f" {parent}" if parent is not None else "")
-        self.ok(line)
+    def add(self, endpoint: int, device_type: str, parent: int | None = None, tags: Sequence[str] = ()) -> None:
+        """Add an endpoint, composed under ``parent`` when given, with semantic tags.
+
+        Each tag is ``<namespace>:<tag>[:<label>]`` of a standard namespace, for example ``7:1``.
+        """
+        words = [f"add {endpoint} {device_type}"]
+        if parent is not None:
+            words.append(f"parent={parent}")
+        words.extend(f"tag={tag}" for tag in tags)
+        self.ok(" ".join(words))
 
     def remove(self, endpoint: int) -> None:
         self.ok(f"remove {endpoint}")

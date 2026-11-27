@@ -85,20 +85,62 @@ fn engine() -> RsMatterEngine {
 }
 
 /// The rs-matter engine as the engine-agnostic suite sees it: a short response timeout and a
-/// small endpoint capacity, so that the capacity case exhausts it quickly.
-struct RsMatterUnderTest;
+/// small endpoint capacity, so that the capacity case exhausts it quickly. It keeps the engine
+/// it handed out last, so that [`EngineUnderTest::read_attribute`] reads the engine thread's
+/// table, the state the handler answers clients from.
+#[derive(Default)]
+struct RsMatterUnderTest {
+    last: Mutex<Option<Arc<RsMatterEngine>>>,
+}
+
+/// An engine shared between the suite, which owns it as a `Box<dyn Engine>`, and the
+/// [`RsMatterUnderTest`] that reads through it.
+struct SharedEngine(Arc<RsMatterEngine>);
+
+impl Engine for SharedEngine {
+    fn start(
+        &self,
+        identity: NodeIdentity,
+        network: NetworkConfig,
+        attestation: Attestation,
+        role: NodeRole,
+        storage: Arc<dyn Storage>,
+    ) -> matter_rs_engine::BoxFuture<'_, Result<Box<dyn Running>, Error>> {
+        self.0.start(identity, network, attestation, role, storage)
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Engine::capabilities(&*self.0)
+    }
+}
 
 impl EngineUnderTest for RsMatterUnderTest {
     fn engine(&self) -> Box<dyn Engine> {
-        Box::new(engine().with_endpoint_capacity(8))
+        let engine = Arc::new(engine().with_endpoint_capacity(8));
+        *self.last.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(&engine));
+        Box::new(SharedEngine(engine))
     }
 
     fn network(&self) -> NetworkConfig {
         network()
     }
+
+    fn read_attribute(
+        &self,
+        endpoint: EndpointId,
+        cluster: ClusterId,
+        attribute: AttributeId,
+    ) -> Option<Value> {
+        self.last
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .expect("an engine was handed out")
+            .read_attribute(endpoint, cluster, attribute)
+    }
 }
 
-matter_rs_engine::contract_tests!(RsMatterUnderTest);
+matter_rs_engine::contract_tests!(RsMatterUnderTest::default());
 
 fn start_with(
     engine: &RsMatterEngine,
@@ -160,6 +202,7 @@ fn light(id: EndpointId) -> EndpointDescription {
             (ON_OFF, ON_OFF_ATTRIBUTE, Value::Bool(false)),
             (LEVEL, CURRENT_LEVEL, Value::U8(0)),
         ],
+        tags: vec![],
     }
 }
 

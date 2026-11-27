@@ -14,7 +14,8 @@
 //! - A [`DeviceSpec`] describes a device: a stable [`DeviceKey`] (the id the configuration gives
 //!   it), a name and one or more [`PartSpec`]s, each a [`DeviceKind`]. A device with one part is
 //!   one endpoint; a device with several parts is composed: a Bridged Node parent endpoint with
-//!   one child endpoint per part, and semantic tags on children that share a kind.
+//!   one child endpoint per part, and semantic tags on children that share a kind, which the
+//!   engine serves in their Descriptor `TagList`.
 //! - Endpoint numbers are stable across restarts: a persisted map from device key and part to
 //!   endpoint number plus a counter, kept in the storage under `bridge/endpoints/` (see
 //!   [`numbering`]). The aggregator is endpoint 1, the first bridged endpoint 2. A removed device

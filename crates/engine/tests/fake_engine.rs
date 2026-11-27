@@ -107,6 +107,7 @@ fn light(id: EndpointId) -> EndpointDescription {
             (ON_OFF, ON_OFF_ATTRIBUTE, Value::Bool(false)),
             (LEVEL, CURRENT_LEVEL, Value::U8(0)),
         ],
+        tags: vec![],
     }
 }
 
@@ -428,6 +429,18 @@ fn endpoint_can_be_re_added() {
     assert_eq!(
         fake.read(LIGHT, ON_OFF, ON_OFF_ATTRIBUTE),
         Some(Value::Bool(false))
+    );
+}
+
+/// An endpoint without semantic tags reports no Descriptor `TagList`.
+#[test]
+fn untagged_endpoint_reports_no_tag_list() {
+    let fake = FakeEngine::new();
+    let node = start(&fake);
+    block_on(node.add_endpoint(light(LIGHT))).unwrap();
+    assert_eq!(
+        fake.read(LIGHT, ClusterId::new(0x001D), AttributeId::new(0x0004)),
+        None
     );
 }
 

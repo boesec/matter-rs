@@ -39,10 +39,8 @@ pub struct EndpointPlan {
     pub part: Option<PartIndex>,
     /// The device kind of the part; `None` for the parent endpoint.
     pub kind: Option<DeviceKind>,
-    /// The semantic tags of the endpoint's Descriptor `TagList`.
-    ///
-    /// The engine facade has no way to carry them yet, so they are computed here and exposed, but
-    /// do not reach the Descriptor cluster.
+    /// The semantic tags of the endpoint's Descriptor `TagList`; the description carries them
+    /// to the engine, which serves them.
     pub tags: Vec<SemanticTag>,
     /// The description the engine receives.
     pub description: EndpointDescription,
@@ -414,6 +412,16 @@ fn tags_of(spec: &DeviceSpec, index: usize) -> Vec<SemanticTag> {
     alloc::vec![tag]
 }
 
+/// A semantic tag of the bridge's model as the engine facade carries it.
+fn engine_tag(tag: &SemanticTag) -> matter_rs_engine::SemanticTag {
+    matter_rs_engine::SemanticTag {
+        manufacturer_code: tag.manufacturer_code,
+        namespace: tag.namespace,
+        tag: tag.tag,
+        label: tag.label.clone(),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn assemble(
     endpoint: EndpointId,
@@ -450,6 +458,7 @@ fn assemble(
             .iter()
             .map(|((cluster, attribute), value)| (*cluster, *attribute, value.clone()))
             .collect(),
+        tags: tags.iter().map(engine_tag).collect(),
     };
     PlannedEndpoint {
         plan: EndpointPlan {
@@ -783,6 +792,17 @@ mod tests {
         assert!(endpoints[3].plan.tags.is_empty());
         // Explicit tags are taken as given.
         assert_eq!(endpoints[4].plan.tags, vec![SemanticTag::standard(0x08, 1)]);
+        // The description the engine receives carries the same tags.
+        for endpoint in &endpoints {
+            let expected: Vec<matter_rs_engine::SemanticTag> =
+                endpoint.plan.tags.iter().map(super::engine_tag).collect();
+            assert_eq!(endpoint.plan.description.tags, expected);
+        }
+        assert_eq!(
+            endpoints[2].plan.description.tags,
+            vec![matter_rs_engine::SemanticTag::standard(0x07, 2).with_label("Lamp")]
+        );
+        assert!(endpoints[0].plan.description.tags.is_empty());
     }
 
     #[test]

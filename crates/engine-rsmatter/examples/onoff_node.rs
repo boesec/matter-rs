@@ -26,12 +26,17 @@
 //!
 //! | Command | Effect |
 //! |---|---|
-//! | `add <endpoint> <device-type> [parent]` | Adds an endpoint of the named device type, composed under `parent` when given |
+//! | `add <endpoint> <device-type> [parent=<endpoint>] [tag=<namespace>:<tag>[:<label>]]...` | Adds an endpoint of the named device type, composed under `parent` when given, with the semantic tags given (see below) |
 //! | `remove <endpoint>` | Removes the endpoint (and the endpoints composed under it) |
 //! | `set <endpoint> <cluster> <attribute> <value>` | Sets an attribute the endpoint lists; ids in hex (`0x0006`) or decimal |
 //! | `reachable <endpoint> true\|false` | Marks a bridged endpoint reachable or not |
 //! | `pairing` | Prints the manual pairing code and the QR text (the only command that shows a secret) |
 //! | `quit` | Stops the node; the process exits after the stop event |
+//!
+//! The parent of `add` may also be given as a bare endpoint number after the device type. Each
+//! `tag=` adds one semantic tag of a standard namespace to the endpoint's Descriptor `TagList`:
+//! namespace and tag in decimal or `0x` hex, and an optional label without spaces, for example
+//! `tag=7:1` or `tag=0x07:2:Left`.
 //!
 //! A value is written in the type of the attribute: `true`/`false` for booleans, an integer
 //! for the integer kinds, the rest of the line for strings, `null` where the attribute is
@@ -48,7 +53,9 @@
 //! from the `data_model/1.6` directory of
 //! <https://github.com/project-chip/connectedhomeip> (`device_types/*.xml`, `clusters/*.xml`).
 //! Every bridged endpoint also carries the Bridged Node device type and the Bridged Device
-//! Basic Information cluster.
+//! Basic Information cluster, except a part of a composed device: an endpoint whose parent is
+//! an endpoint the node added carries only its own device type and clusters, as the parts of a
+//! bridged composed device do. The parent of such a device is usually a `bridged-node`.
 //!
 //! | Name | Device type | Clusters |
 //! |---|---|---|
@@ -56,6 +63,7 @@
 //! | `dimmable-light` | Dimmable Light `0x0101` rev 3 | On/Off, Level Control `0x0008` rev 7 |
 //! | `contact-sensor` | Contact Sensor `0x0015` rev 2 | Boolean State `0x0045` rev 3 |
 //! | `temperature-sensor` | Temperature Sensor `0x0302` rev 3 | Temperature Measurement `0x0402` rev 6 |
+//! | `bridged-node` | Bridged Node `0x0013` rev 3 only | Bridged Device Basic Information only; the parent of a composed device |
 //!
 //! Bridged Node is `0x0013` rev 3, Bridged Device Basic Information `0x0039` rev 6.
 
@@ -70,8 +78,8 @@ use matter_rs_engine::testing::block_on;
 use matter_rs_engine::{
     Attestation, AttributeId, ClusterDescription, ClusterId, CommandId, DeviceType, DeviceTypeId,
     DirectoryStorage, EndpointDescription, EndpointId, Engine, Event, EventId, Kind, NetworkConfig,
-    NodeIdentity, NodeRole, ProductId, Response, Running, Secret, Status, Storage, Value, VendorId,
-    bridged_device,
+    NodeIdentity, NodeRole, ProductId, Response, Running, Secret, SemanticTag, Status, Storage,
+    Value, VendorId, bridged_device,
 };
 use matter_rs_engine_rsmatter::RsMatterEngine;
 
@@ -177,14 +185,16 @@ enum DeviceKind {
     DimmableLight,
     ContactSensor,
     TemperatureSensor,
+    BridgedNode,
 }
 
 impl DeviceKind {
-    const NAMES: [(&'static str, Self); 4] = [
+    const NAMES: [(&'static str, Self); 5] = [
         ("on-off-light", Self::OnOffLight),
         ("dimmable-light", Self::DimmableLight),
         ("contact-sensor", Self::ContactSensor),
         ("temperature-sensor", Self::TemperatureSensor),
+        ("bridged-node", Self::BridgedNode),
     ];
 
     fn parse(name: &str) -> Option<Self> {
@@ -200,6 +210,7 @@ impl DeviceKind {
             Self::DimmableLight => (DEVICE_TYPE_DIMMABLE_LIGHT, 3),
             Self::ContactSensor => (DEVICE_TYPE_CONTACT_SENSOR, 2),
             Self::TemperatureSensor => (DEVICE_TYPE_TEMPERATURE_SENSOR, 3),
+            Self::BridgedNode => (DEVICE_TYPE_BRIDGED_NODE, 3),
         };
         DeviceType { id, revision }
     }
@@ -210,6 +221,7 @@ impl DeviceKind {
             Self::DimmableLight => "Dimmer",
             Self::ContactSensor => "Contact",
             Self::TemperatureSensor => "Thermometer",
+            Self::BridgedNode => "Device",
         }
     }
 }
@@ -368,6 +380,7 @@ struct Device {
     parent: Option<EndpointId>,
     clusters: Vec<ClusterSpec>,
     values: BTreeMap<(ClusterId, AttributeId), Value>,
+    tags: Vec<SemanticTag>,
 }
 
 impl Device {
@@ -384,8 +397,11 @@ impl Device {
             DeviceKind::DimmableLight => vec![on_off_spec(on), level_control_spec()],
             DeviceKind::ContactSensor => vec![boolean_state_spec()],
             DeviceKind::TemperatureSensor => vec![temperature_measurement_spec()],
+            DeviceKind::BridgedNode => vec![],
         };
-        clusters.push(bridged_device_spec(label, &unique_id));
+        if !is_part(kind, parent) {
+            clusters.push(bridged_device_spec(label, &unique_id));
+        }
         let values = clusters
             .iter()
             .flat_map(|cluster| cluster.attributes.iter())
@@ -396,19 +412,26 @@ impl Device {
             parent,
             clusters,
             values,
+            tags: Vec::new(),
         }
     }
 
+    fn with_tags(mut self, tags: Vec<SemanticTag>) -> Self {
+        self.tags = tags;
+        self
+    }
+
     fn description(&self, id: EndpointId) -> EndpointDescription {
+        let mut device_types = vec![self.kind.device_type()];
+        if self.kind != DeviceKind::BridgedNode && !is_part(self.kind, self.parent) {
+            device_types.push(DeviceType {
+                id: DEVICE_TYPE_BRIDGED_NODE,
+                revision: 3,
+            });
+        }
         EndpointDescription {
             id,
-            device_types: vec![
-                self.kind.device_type(),
-                DeviceType {
-                    id: DEVICE_TYPE_BRIDGED_NODE,
-                    revision: 3,
-                },
-            ],
+            device_types,
             clusters: self
                 .clusters
                 .iter()
@@ -429,6 +452,7 @@ impl Device {
                 .flat_map(|cluster| cluster.attributes.iter())
                 .map(|a| (a.cluster, a.attribute, a.initial.clone()))
                 .collect(),
+            tags: self.tags.clone(),
         }
     }
 
@@ -445,6 +469,13 @@ impl Device {
             Some(Value::Bool(true))
         )
     }
+}
+
+/// Whether a device of `kind` under `parent` is a part of a composed device: its parent is an
+/// endpoint the node added, not the aggregator. A part carries neither the Bridged Node device
+/// type nor Bridged Device Basic Information; a `bridged-node` is never a part.
+fn is_part(kind: DeviceKind, parent: Option<EndpointId>) -> bool {
+    kind != DeviceKind::BridgedNode && parent.is_some_and(|parent| parent != AGGREGATOR)
 }
 
 /// The product's view of the node: the devices by endpoint.
@@ -484,6 +515,7 @@ enum Command {
         endpoint: EndpointId,
         kind: DeviceKind,
         parent: Option<EndpointId>,
+        tags: Vec<SemanticTag>,
     },
     Remove {
         endpoint: EndpointId,
@@ -518,6 +550,27 @@ fn parse_endpoint(text: &str) -> Result<EndpointId, String> {
         .map_err(|_| format!("endpoint: {text:?} exceeds 16 bits"))
 }
 
+/// Parses a semantic tag of a standard namespace: `<namespace>:<tag>[:<label>]`.
+fn parse_tag(text: &str) -> Result<SemanticTag, String> {
+    let mut fields = text.splitn(3, ':');
+    let mut number = |what: &str| -> Result<u8, String> {
+        let field = fields
+            .next()
+            .filter(|field| !field.is_empty())
+            .ok_or_else(|| format!("tag {text:?}: missing {what}"))?;
+        u8::try_from(parse_id(field, what)?)
+            .map_err(|_| format!("tag {text:?}: {what} exceeds 8 bits"))
+    };
+    let namespace = number("namespace")?;
+    let tag = number("tag")?;
+    let tag = SemanticTag::standard(namespace, tag);
+    Ok(match fields.next() {
+        Some(label) if !label.is_empty() => tag.with_label(label),
+        Some(_) => return Err(format!("tag {text:?}: empty label")),
+        None => tag,
+    })
+}
+
 fn parse_command(line: &str) -> Result<Command, String> {
     let words: Vec<&str> = line.split_whitespace().collect();
     let Some(&verb) = words.first() else {
@@ -540,15 +593,30 @@ fn parse_command(line: &str) -> Result<Command, String> {
                     known.join(", ")
                 )
             })?;
-            let parent = words.get(3).map(|text| parse_endpoint(text)).transpose()?;
-            let used = if parent.is_some() { 4 } else { 3 };
+            let mut parent = None;
+            let mut tags = Vec::new();
+            for (index, word) in words.iter().enumerate().skip(3) {
+                if let Some(text) = word.strip_prefix("parent=") {
+                    if parent.is_some() {
+                        return Err(String::from("add: parent given twice"));
+                    }
+                    parent = Some(parse_endpoint(text)?);
+                } else if let Some(text) = word.strip_prefix("tag=") {
+                    tags.push(parse_tag(text)?);
+                } else if index == 3 {
+                    parent = Some(parse_endpoint(word)?);
+                } else {
+                    return Err(format!("add: unexpected argument {word:?}"));
+                }
+            }
             (
                 Command::Add {
                     endpoint,
                     kind,
                     parent,
+                    tags,
                 },
-                used,
+                words.len(),
             )
         }
         "remove" => (
@@ -653,8 +721,10 @@ impl Product {
                 endpoint,
                 kind,
                 parent,
+                tags,
             } => {
-                let device = Device::new(endpoint, kind, parent, kind.default_label(), false);
+                let device = Device::new(endpoint, kind, parent, kind.default_label(), false)
+                    .with_tags(tags);
                 block_on(self.node.add_endpoint(device.description(endpoint)))
                     .map_err(|e| e.to_string())?;
                 self.model().devices.insert(endpoint, device);
@@ -1057,8 +1127,8 @@ fn run(options: Options) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AttributeSpec, Command, Device, DeviceKind, Kind, Model, Value, attribute, event_line,
-        level_field, parse_command, parse_value,
+        AttributeSpec, Command, Device, DeviceKind, Kind, Model, SemanticTag, Value, attribute,
+        event_line, level_field, parse_command, parse_value,
     };
     use matter_rs_engine::{
         AttributeId, ClusterId, CommandId, CommissioningState, Correlation, EndpointId, Event,
@@ -1076,7 +1146,8 @@ mod tests {
             Ok(Command::Add {
                 endpoint: ep(3),
                 kind: DeviceKind::ContactSensor,
-                parent: None
+                parent: None,
+                tags: vec![],
             })
         );
         assert_eq!(
@@ -1084,7 +1155,29 @@ mod tests {
             Ok(Command::Add {
                 endpoint: ep(4),
                 kind: DeviceKind::TemperatureSensor,
-                parent: Some(ep(3))
+                parent: Some(ep(3)),
+                tags: vec![],
+            })
+        );
+        assert_eq!(
+            parse_command("add 11 on-off-light parent=10 tag=7:1 tag=0x07:2:Left"),
+            Ok(Command::Add {
+                endpoint: ep(11),
+                kind: DeviceKind::OnOffLight,
+                parent: Some(ep(10)),
+                tags: vec![
+                    SemanticTag::standard(7, 1),
+                    SemanticTag::standard(7, 2).with_label("Left"),
+                ],
+            })
+        );
+        assert_eq!(
+            parse_command("add 10 bridged-node tag=7:3"),
+            Ok(Command::Add {
+                endpoint: ep(10),
+                kind: DeviceKind::BridgedNode,
+                parent: None,
+                tags: vec![SemanticTag::standard(7, 3)],
             })
         );
         assert_eq!(
@@ -1131,6 +1224,13 @@ mod tests {
             ("add 2 toaster", "unknown device type"),
             ("add 70000 on-off-light", "exceeds 16 bits"),
             ("add x on-off-light", "not an id"),
+            ("add 3 on-off-light 2 4", "unexpected argument"),
+            ("add 3 on-off-light parent=2 parent=4", "parent given twice"),
+            ("add 3 on-off-light parent=x", "not an id"),
+            ("add 3 on-off-light tag=7", "missing tag"),
+            ("add 3 on-off-light tag=:1", "missing namespace"),
+            ("add 3 on-off-light tag=7:256", "exceeds 8 bits"),
+            ("add 3 on-off-light tag=7:1:", "empty label"),
             ("remove 2 3", "too many arguments"),
             ("set 2 0x0006 0", "missing value"),
             ("reachable 2 maybe", "not true or false"),
@@ -1218,14 +1318,15 @@ mod tests {
     fn device_kinds_have_names_types_and_consistent_descriptions() {
         for (name, kind) in DeviceKind::NAMES {
             assert_eq!(DeviceKind::parse(name), Some(kind));
-            let device = Device::new(ep(5), kind, Some(ep(2)), "Label", true);
+            let device = Device::new(ep(5), kind, Some(super::AGGREGATOR), "Label", true);
             let description = device.description(ep(5));
-            assert_eq!(description.parent, Some(ep(2)));
+            assert_eq!(description.parent, Some(super::AGGREGATOR));
             assert_eq!(description.device_types[0], kind.device_type());
             assert_eq!(
-                description.device_types[1].id,
+                description.device_types.last().unwrap().id,
                 super::DEVICE_TYPE_BRIDGED_NODE
             );
+            assert!(description.tags.is_empty());
             // Every listed attribute has an initial value of its kind (or null when nullable).
             for cluster in &description.clusters {
                 for attribute in &cluster.attributes {
@@ -1258,6 +1359,36 @@ mod tests {
                 .get(&(super::bridged_device::CLUSTER, super::UNIQUE_ID)),
             Some(&Value::from("onoff-node-2"))
         );
+    }
+
+    /// A composed device: a `bridged-node` parent carries Bridged Node and Bridged Device
+    /// Basic Information; its parts carry only their own device type and clusters, and the
+    /// tags they were given.
+    #[test]
+    fn composed_parts_carry_their_own_device_type_and_tags() {
+        let parent = Device::new(ep(10), DeviceKind::BridgedNode, None, "Strip", false);
+        let description = parent.description(ep(10));
+        let types: Vec<u32> = description
+            .device_types
+            .iter()
+            .map(|d| d.id.raw())
+            .collect();
+        assert_eq!(types, vec![super::DEVICE_TYPE_BRIDGED_NODE.raw()]);
+        let clusters: Vec<ClusterId> = description.clusters.iter().map(|c| c.id).collect();
+        assert_eq!(clusters, vec![super::bridged_device::CLUSTER]);
+
+        let tags = vec![SemanticTag::standard(7, 1)];
+        let part = Device::new(ep(11), DeviceKind::OnOffLight, Some(ep(10)), "a", false)
+            .with_tags(tags.clone());
+        let description = part.description(ep(11));
+        assert_eq!(
+            description.device_types,
+            vec![DeviceKind::OnOffLight.device_type()]
+        );
+        let clusters: Vec<ClusterId> = description.clusters.iter().map(|c| c.id).collect();
+        assert_eq!(clusters, vec![super::ON_OFF]);
+        assert_eq!(description.parent, Some(ep(10)));
+        assert_eq!(description.tags, tags);
     }
 
     #[test]

@@ -29,7 +29,7 @@ use std::time::Duration;
 use crate::description::EndpointDescription;
 use crate::engine::{
     AttributeValue, BoxFuture, Capabilities, CommissioningState, Correlation, Engine, Event,
-    FabricInfo, PairingInfo, Response, Running, StopReason, Window, bridged_device,
+    FabricInfo, PairingInfo, Response, Running, StopReason, Window, bridged_device, descriptor,
 };
 use crate::error::Error;
 use crate::id::{
@@ -42,6 +42,9 @@ use crate::secret::Secret;
 use crate::status::Status;
 use crate::storage::Storage;
 use crate::value::Value;
+
+/// The global `FeatureMap` attribute, which the fake reports for the Descriptor cluster.
+const DESCRIPTOR_FEATURE_MAP: AttributeId = AttributeId::new(0xFFFC);
 
 /// An event the product emitted, as recorded by [`FakeEngine::event_log`].
 #[derive(Debug, Clone, PartialEq)]
@@ -282,6 +285,10 @@ impl FakeEngine {
 
     /// The value the engine reports for an attribute, or `None` when the endpoint does not
     /// exist or does not list the attribute.
+    ///
+    /// Of the Descriptor cluster, which the engine serves itself, the fake answers the parts
+    /// that come from the description beyond its ids: `TagList` (present only when the
+    /// endpoint has semantic tags) and `FeatureMap` (with the `TagList` feature exactly then).
     #[must_use]
     pub fn read(
         &self,
@@ -289,11 +296,20 @@ impl FakeEngine {
         cluster: ClusterId,
         attribute: AttributeId,
     ) -> Option<Value> {
-        self.shared
-            .lock()
-            .endpoints
-            .get(&endpoint)
-            .and_then(|e| e.values.get(&(cluster, attribute)).cloned())
+        let state = self.shared.lock();
+        let e = state.endpoints.get(&endpoint)?;
+        if cluster == descriptor::CLUSTER {
+            return match attribute {
+                descriptor::TAG_LIST => e.description.tag_list(),
+                DESCRIPTOR_FEATURE_MAP => Some(Value::U32(if e.description.tags.is_empty() {
+                    0
+                } else {
+                    descriptor::FEATURE_TAG_LIST
+                })),
+                _ => None,
+            };
+        }
+        e.values.get(&(cluster, attribute)).cloned()
     }
 
     /// The endpoints the product has added, in id order.
@@ -495,6 +511,9 @@ impl State {
         }
         if description.device_types.is_empty() {
             return Err(invalid(String::from("no device type")));
+        }
+        if let Some(problem) = description.tag_problem() {
+            return Err(invalid(problem));
         }
         for (i, cluster) in description.clusters.iter().enumerate() {
             if description.clusters[..i].iter().any(|c| c.id == cluster.id) {
