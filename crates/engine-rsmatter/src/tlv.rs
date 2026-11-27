@@ -9,17 +9,17 @@
 
 use matter_rs_engine::Value;
 use rs_matter::error::{Error, ErrorCode};
-use rs_matter::tlv::{TLV, TLVElement, TLVTag, TLVValue, TLVWrite, ToTLV};
+use rs_matter::tlv::{TLV, TLVElement, TLVTag, TLVValue, TLVWrite, TlvError, ToTLV};
 
 /// Encodes a facade value as TLV, for [`rs_matter::dm::Reply::set`] and event writers.
 pub(crate) struct ValueTlv<'a>(pub(crate) &'a Value);
 
 impl ToTLV for ValueTlv<'_> {
-    fn to_tlv<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), Error> {
+    fn to_tlv<W: TLVWrite>(&self, tag: &TLVTag, mut tw: W) -> Result<(), TlvError> {
         write_value(self.0, tag, &mut tw)
     }
 
-    fn tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<TLV<'_>, Error>> {
+    fn tlv_iter(&self, tag: TLVTag) -> impl Iterator<Item = Result<TLV<'_>, TlvError>> {
         let mut elements = Vec::new();
         flatten(self.0, tag, &mut elements);
         elements.into_iter().map(Ok)
@@ -31,7 +31,7 @@ pub(crate) fn write_value<W: TLVWrite>(
     value: &Value,
     tag: &TLVTag,
     tw: &mut W,
-) -> Result<(), Error> {
+) -> Result<(), TlvError> {
     match value {
         Value::Null => tw.null(tag),
         Value::Bool(v) => tw.bool(tag, *v),
@@ -70,7 +70,7 @@ pub(crate) fn write_event_fields<W: TLVWrite>(
     payload: &Value,
     data_tag: &TLVTag,
     tw: &mut W,
-) -> Result<(), Error> {
+) -> Result<(), TlvError> {
     tw.start_struct(data_tag)?;
     match payload {
         Value::Struct(fields) => {
@@ -153,7 +153,8 @@ pub(crate) fn raw_from_tag(tag: &TLVTag) -> u64 {
 ///
 /// # Errors
 ///
-/// rs-matter's error when the element is malformed.
+/// rs-matter's error when the element is malformed; the TLV reader's own error is converted
+/// into the global one.
 pub(crate) fn value_from_tlv(element: &TLVElement<'_>) -> Result<Value, Error> {
     Ok(match element.value()? {
         TLVValue::S8(v) => Value::I8(v),

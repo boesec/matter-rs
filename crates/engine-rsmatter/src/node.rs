@@ -29,24 +29,22 @@ use matter_rs_engine::{
 use rs_matter::Matter;
 use rs_matter::crypto::{Crypto, default_crypto};
 use rs_matter::dm::clusters::basic_info::BasicInfoConfig;
-use rs_matter::dm::clusters::decl::operational_credentials;
 use rs_matter::dm::endpoints::{EthSysHandlerBuilder, ROOT_ENDPOINT_ID};
 use rs_matter::dm::networks::SysNetifs;
-use rs_matter::dm::{AttrChangeNotifier, DataModel, EventEmitter, HandlerContext};
-use rs_matter::fabric::FabricPersist;
-use rs_matter::im::encoding::{EventPriority, IMBuffer};
-use rs_matter::im::events::EVENT_DATA_TAG;
+use rs_matter::dm::{AttrChangeNotifier, DataModel, EVENT_DATA_TAG, EventEmitter, HandlerContext};
+use rs_matter::im::encoding::EventPriority;
 use rs_matter::im::{InteractionModel, InteractionModelState};
+use rs_matter::pairing::DevCommData;
 use rs_matter::persist::KvBlobStoreAccess;
 use rs_matter::respond::DefaultResponder;
 use rs_matter::sc::pase::{
     CommWindowState, MAX_COMM_WINDOW_TIMEOUT_SECS, MIN_COMM_WINDOW_TIMEOUT_SECS,
 };
-use rs_matter::transport::exchange::MatterBuffers;
+use rs_matter::transport::MatterBuffers;
 use rs_matter::transport::network::MatterLocalService;
 use rs_matter::transport::network::mdns::builtin::{BuiltinMdns, Host};
 use rs_matter::utils::futures::{Coalesce, Either, select, select4};
-use rs_matter::utils::storage::pooled::Buffers;
+use rs_matter::utils::storage::pooled::ByteBuffers;
 
 use crate::attestation::NodeAttestation;
 use crate::channel::{Reply, Request, Shared};
@@ -179,7 +177,7 @@ fn run_node(
     };
     let matter = Matter::new(
         &basic_info,
-        pairing::commissioning_data(&identity),
+        DevCommData::Passcode(pairing::commissioning_data(&identity)),
         attestation.as_dyn(),
         network.port,
     );
@@ -200,7 +198,7 @@ fn run_node(
         TableMetadata(Rc::clone(&table)),
         EthSysHandlerBuilder::new()
             .netif_diag(&SysNetifs)
-            .build(rand)
+            .build(&matter, rand)
             .chain(|endpoint, _| endpoint != ROOT_ENDPOINT_ID, handler),
     );
     let im = InteractionModel::new(&matter, &crypto, &buffers, data_model, &kv, &im_state);
@@ -382,7 +380,7 @@ async fn service_loop<C, B, T, K, const NS: usize, const NE: usize>(
 ) -> Result<(), rs_matter::error::Error>
 where
     C: Crypto,
-    B: Buffers<IMBuffer>,
+    B: ByteBuffers,
     T: DataModel,
     K: KvBlobStoreAccess + Copy,
 {
@@ -426,7 +424,7 @@ async fn handle_request<C, B, T, K, const NS: usize, const NE: usize>(
     identity: &NodeIdentity,
 ) where
     C: Crypto,
-    B: Buffers<IMBuffer>,
+    B: ByteBuffers,
     T: DataModel,
     K: KvBlobStoreAccess + Copy,
 {
@@ -555,7 +553,7 @@ fn notify_endpoints<C, B, T, K, const NS: usize, const NE: usize>(
     endpoints: &[EndpointId],
 ) where
     C: Crypto,
-    B: Buffers<IMBuffer>,
+    B: ByteBuffers,
     T: DataModel,
     K: KvBlobStoreAccess,
 {
@@ -590,16 +588,15 @@ fn emit<E: EventEmitter>(
             cluster.raw(),
             event.raw(),
             EventPriority::Info,
-            |mut tw| write_event_fields(payload, &EVENT_DATA_TAG, &mut tw),
+            |mut tw| write_event_fields(payload, &EVENT_DATA_TAG, &mut tw).map_err(Into::into),
         )
         .map(|_| ())
         .map_err(|e| facade_error(&e))
 }
 
-/// Removes a fabric the way rs-matter's `RemoveFabric` command does, as far as its public
-/// API allows: the fabric table entry, the sessions on it, the persisted record and the next
-/// fabric index; then the handlers are told and the Operational Credentials cluster reported
-/// as changed.
+/// Removes a fabric the way rs-matter's `RemoveFabric` command does: the fabric table entry,
+/// the sessions on it, the persisted record and the next fabric index, the mDNS records and
+/// the `Leave` event; then the handlers are told so that they drop what they keep of it.
 fn remove_fabric<C, B, T, K, const NS: usize, const NE: usize>(
     im: &InteractionModel<'_, C, B, T, K, (), NS, NE>,
     matter: &Matter<'_>,
@@ -608,33 +605,17 @@ fn remove_fabric<C, B, T, K, const NS: usize, const NE: usize>(
 ) -> Result<(), Error>
 where
     C: Crypto,
-    B: Buffers<IMBuffer>,
+    B: ByteBuffers,
     T: DataModel,
     K: KvBlobStoreAccess + Copy,
 {
     let index = NonZeroU8::new(fabric.raw()).ok_or(Error::UnknownFabric(fabric))?;
-    let mut persist = FabricPersist::strict(kv);
-    let removed = matter.with_state(|state| {
-        if state.fabrics.remove(index).is_err() {
-            return Ok(false);
-        }
-        state
-            .sessions
-            .remove_where(|session| session.get_local_fabric_idx() == index.get());
-        matter.transport().notify_session_removed();
-        persist
-            .store_next_fab_idx(state.fabrics.next_fab_idx())
-            .and(persist.remove(index))
-            .map(|()| true)
-    });
-    match removed {
+    match matter.remove_fabric(index, None, kv, im, im) {
         Ok(true) => {}
         Ok(false) => return Err(Error::UnknownFabric(fabric)),
         Err(error) => return Err(facade_error(&error)),
     }
-    persist.run().map_err(|e| facade_error(&e))?;
     log::info!("fabric {fabric} removed by the product");
     im.notify_fabric_removed(index);
-    im.notify_cluster_changed(ROOT_ENDPOINT_ID, operational_credentials::FULL_CLUSTER.id);
     Ok(())
 }

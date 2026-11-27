@@ -35,12 +35,14 @@ serde_json = "1.0"
 # Property-based tests of the engine facade (dev-dependency only).
 proptest = "1.6"
 
-# The Matter engine. Pinned to one git revision of rs-matter (0.4.1 plus the unreleased fixes
-# up to that commit, including the Windows UDP fix); `rs-matter-macros` comes from the same
-# revision so that the two never drift apart. The upgrade procedure is in the rustdoc of the
-# `matter-rs-engine-rsmatter` crate. Only that crate may depend on these two.
-rs-matter = { git = "https://github.com/project-chip/rs-matter", rev = "14baec0955483b794680bb0c56bb7f4faa2741dc", default-features = false, features = ["os", "rustcrypto", "log"] }
-rs-matter-macros = { git = "https://github.com/project-chip/rs-matter", rev = "14baec0955483b794680bb0c56bb7f4faa2741dc" }
+# The Matter engine. Pinned to one git revision of rs-matter: `af3e49a` of 2026-11-26 (0.4.1
+# plus the unreleased changes up to that commit, among them the split into `rs-matter-*` micro
+# crates, which the `rs-matter` crate re-exports under the old paths). `rs-matter-macros` comes
+# from the same revision so that the two never drift apart; the micro crates follow the
+# `rs-matter` entry of the lockfile. The upgrade procedure is in the rustdoc of the
+# `matter-rs-engine-rsmatter` crate. Only that crate may depend on rs-matter and its crates.
+rs-matter = { git = "https://github.com/project-chip/rs-matter", rev = "af3e49ac71c778f62a466c272535d2bbf4d301fb", default-features = false, features = ["os", "rustcrypto", "log"] }
+rs-matter-macros = { git = "https://github.com/project-chip/rs-matter", rev = "af3e49ac71c778f62a466c272535d2bbf4d301fb" }
 # What the rs-matter engine implementation needs around rs-matter: the embassy time driver and
 # timer queue that rs-matter's timers run on under std, the async-io reactor for its UDP
 # sockets, socket2 for the explicit dual-stack bind, if-addrs for interface selection, rand

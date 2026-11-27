@@ -5,7 +5,6 @@
 
 use matter_rs_engine::{MAX_DISCRIMINATOR, NodeIdentity, PairingInfo, Secret, is_valid_passcode};
 use rs_matter::BasicCommData;
-use rs_matter::dm::clusters::basic_info::BasicInfoConfig;
 use rs_matter::pairing::DiscoveryCapabilities;
 use rs_matter::pairing::qr::{CommFlowType, QrPayload, no_optional_data};
 use rs_matter::sc::pase::{Spake2pVerifierPassword, Spake2pVerifierPasswordRef};
@@ -63,17 +62,13 @@ pub fn pairing_info_for(identity: &NodeIdentity) -> Result<PairingInfo, Error> {
     let commissioning = commissioning_data(identity);
     let manual_code = commissioning.compute_pairing_code();
     let serial_number = identity.serial_number.as_deref().unwrap_or("");
-    let config = BasicInfoConfig {
-        vid: identity.vendor_id.raw(),
-        pid: identity.product_id.raw(),
-        serial_no: serial_number,
-        ..BasicInfoConfig::new()
-    };
-    let payload = QrPayload::new_from_basic_info(
+    let payload = QrPayload::new(
         DiscoveryCapabilities::IP,
         CommFlowType::Standard,
         commissioning,
-        &config,
+        identity.vendor_id.raw(),
+        identity.product_id.raw(),
+        serial_number,
         no_optional_data,
     );
     let mut buffer = [0_u8; 512];
