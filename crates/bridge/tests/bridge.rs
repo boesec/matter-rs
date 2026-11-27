@@ -761,6 +761,35 @@ fn composed_siblings_get_tags() {
         vec![SemanticTag::standard(0x07, 2).with_label("Lamp")]
     );
     assert!(endpoints[3].tags.is_empty());
+
+    // The engine serves the tags in the Descriptor `TagList` (field tags of
+    // `SemanticTagStruct`: MfgCode 0, NamespaceID 1, Tag 2, Label 3), and only where there are
+    // tags.
+    let tag_list = |endpoint: EndpointId| {
+        use matter_rs_engine::descriptor;
+        harness
+            .fake
+            .read(endpoint, descriptor::CLUSTER, descriptor::TAG_LIST)
+    };
+    assert_eq!(tag_list(endpoints[0].endpoint), None);
+    assert_eq!(
+        tag_list(endpoints[1].endpoint),
+        Some(Value::List(vec![Value::Struct(vec![
+            (0, Value::Null),
+            (1, Value::U8(0x07)),
+            (2, Value::U8(1)),
+        ])]))
+    );
+    assert_eq!(
+        tag_list(endpoints[2].endpoint),
+        Some(Value::List(vec![Value::Struct(vec![
+            (0, Value::Null),
+            (1, Value::U8(0x07)),
+            (2, Value::U8(2)),
+            (3, Value::from("Lamp")),
+        ])]))
+    );
+    assert_eq!(tag_list(endpoints[3].endpoint), None);
     harness.stop();
 }
 
