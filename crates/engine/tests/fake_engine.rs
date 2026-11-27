@@ -431,6 +431,18 @@ fn endpoint_can_be_re_added() {
     );
 }
 
+/// An endpoint without semantic tags reports no Descriptor `TagList`.
+#[test]
+fn untagged_endpoint_reports_no_tag_list() {
+    let fake = FakeEngine::new();
+    let node = start(&fake);
+    block_on(node.add_endpoint(light(LIGHT))).unwrap();
+    assert_eq!(
+        fake.read(LIGHT, ClusterId::new(0x001D), AttributeId::new(0x0004)),
+        None
+    );
+}
+
 #[test]
 fn removing_an_endpoint_removes_its_parts() {
     let fake = FakeEngine::new();

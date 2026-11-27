@@ -939,6 +939,30 @@ mod tests {
         assert!(table.check_write(2, VENDOR.raw(), 1).is_ok());
     }
 
+    /// An endpoint without semantic tags gets rs-matter's plain Descriptor: no `TagList`
+    /// (`0x0004`) in its attribute list, no feature, and a read of `TagList` is refused.
+    #[test]
+    fn untagged_descriptor_has_no_tag_list() {
+        const TAG_LIST: u32 = 0x0004;
+        let mut table = Table::new(AGGREGATOR, 4);
+        table.add(light(LIGHT)).unwrap();
+        for endpoint in [1, 2] {
+            let node_endpoint = table.endpoints().iter().find(|e| e.id == endpoint).unwrap();
+            let descriptor = node_endpoint.cluster(DESCRIPTOR.raw()).unwrap();
+            assert_eq!(descriptor.feature_map, 0, "endpoint {endpoint}");
+            // The served attributes are those the metadata's filter lets through.
+            let attributes: Vec<u32> = descriptor.attributes().map(|a| a.id).collect();
+            assert!(
+                !attributes.contains(&TAG_LIST),
+                "endpoint {endpoint}: {attributes:?}"
+            );
+            assert_eq!(
+                table.read(endpoint, DESCRIPTOR.raw(), TAG_LIST),
+                Err(PathError::Attribute)
+            );
+        }
+    }
+
     #[test]
     fn shapes_are_shared_between_endpoints() {
         let mut table = Table::new(AGGREGATOR, 8);
