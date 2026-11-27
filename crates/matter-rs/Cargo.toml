@@ -13,7 +13,7 @@ name = "matter-rs"
 path = "src/main.rs"
 
 [features]
-default = ["role-bridge", "adapter-mqtt"]
+default = ["role-bridge", "adapter-mqtt", "journald"]
 # Roles: `role-<name>`. Each one pulls in its role crate and the role-specific parts of the
 # crates above it. `role-controller` is added with the controller crate.
 role-bridge = [
@@ -23,6 +23,9 @@ role-bridge = [
 ]
 # Adapters: `adapter-<name>`. Each one pulls in its adapter crate and its config section.
 adapter-mqtt = ["dep:matter-rs-adapter-mqtt", "matter-rs-config/adapter-mqtt"]
+# Logging to the systemd journal (`[log] journald = true`). Linux only: on other platforms the
+# feature selects nothing and the configuration ignores the key with a warning.
+journald = ["dep:tracing-journald"]
 # Optional parts by their name (`mgmt-api`, `ui`) and cluster groups (`clusters-<group>`) are
 # added with the crates and groups they select; the scheme is described in ARCHITECTURE.md.
 
@@ -34,9 +37,20 @@ matter-rs-adapter-api = { workspace = true, features = ["std"] }
 matter-rs-adapter-mqtt = { workspace = true, optional = true }
 matter-rs-config = { workspace = true }
 clap = { workspace = true }
+getrandom = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "signal", "macros", "sync", "time"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-log = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tracing-journald = { workspace = true, optional = true }
 
 [dev-dependencies]
 toml = { workspace = true }
+serde_json = { workspace = true }
+# Log records in the shape rs-matter writes them, for the logging unit tests.
+log = { workspace = true }
 
 [lints]
 workspace = true

@@ -41,7 +41,7 @@ lower layers (section 3).
 | `matter-rs-config` | `crates/config` | 5 config | no | TOML config model, validation, schema; generated reference in `doc/` | config model, validation, schema and reference in place; adapter and device sections follow with their crates |
 | `matter-rs-mgmt-api` | `crates/mgmt-api` | 6 optional | no | Local management API | planned |
 | `matter-rs-ui` | `crates/ui` | 6 optional | no | Web UI on top of the management API | planned |
-| `matter-rs` | `crates/matter-rs` | 7 service binary | no | Wires everything by features, runs as a service | command line for the configuration in place; the service itself follows |
+| `matter-rs` | `crates/matter-rs` | 7 service binary | no | Wires everything by features, runs as a service | command line for the configuration in place; `run` starts the engine with the bridge role, logs through `tracing` (text, JSON or the journal) and stops cleanly on a signal; systemd unit and container image in `packaging/`; the adapter supervisor follows |
 
 A skeleton crate compiles, documents its responsibility and layer at the crate root, forbids
 unsafe code, inherits the workspace lints, is `publish = false`, and exports its `Error` type
