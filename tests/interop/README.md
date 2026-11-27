@@ -129,6 +129,25 @@ findings from the first runs shape how the conformance scenario is arranged:
   the engine DUT for that reason; a scenario that needs chip-tool's fabric on this node after a
   framework run would fail at session setup.
 
+### The service binary as device under test
+
+`scenarios/test_service.py` runs the service binary `matter-rs run` itself, as a third device
+under test next to the others: port `INTEROP_SERVICE_DUT_PORT` (5542), discriminator
+`INTEROP_SERVICE_DISCRIMINATOR` (3842), the harness passcode, the interface of
+`INTEROP_ENGINE_INTERFACE`, its own chip-tool fabric (node id 21) and a temporary state
+directory. `harness/servicedut.py` writes the configuration file (outside `logs/`, because it
+holds the passcode), starts the binary, waits for its `node is running` line and stops it with
+`SIGTERM`. The fixtures live in the scenario file. The binary is `INTEROP_SERVICE_DUT` when that
+names a file; otherwise the fixture runs `cargo build --release -p matter-rs` in the repository
+and logs how long it took (`service DUT: release build of matter-rs took ... s` in the pytest
+output and `harness.log`). On the runner the cargo cache of the workflow already holds the
+engine's dependencies, so only the binary's own crates are compiled.
+
+| Test | What it proves |
+|---|---|
+| `test_service_commission_restart_keeps_fabric` | chip-tool commissions the service; the aggregator's `PartsList` is empty (no adapters yet); `SIGTERM` stops it with exit code 0 within the 20-second stop timeout; restarted on the same state directory, the node reports itself commissioned and chip-tool reads `PartsList` and the configured `NodeLabel` without commissioning again |
+| `test_service_config_text_is_complete` | the generated configuration holds the passcode, discriminator, port, interface, state directory and the bridge role (no Docker needed) |
+
 `selftest/` covers the harness without Docker: the manual pairing code against the well-known
 development vector (`20202021`/`3840` gives `34970112332`), redaction and secret capture, process
 control with timeouts, configuration and DUT swapping, parsing of the framework summary.
