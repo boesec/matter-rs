@@ -129,3 +129,11 @@ def test_service_config_text_is_complete() -> None:
     assert Path(parsed["state"]["dir"]) == state_dir
     assert parsed["log"] == {"level": "info", "format": "text"}
     assert parsed["bridge"] == {}
+
+
+def test_service_port_and_discriminator_defaults_and_overrides() -> None:
+    """The DUT's port and discriminator default to 5542/3842 and follow the environment."""
+    assert service_port({}) == 5542
+    assert service_discriminator({}) == 3842
+    assert service_port({"INTEROP_SERVICE_DUT_PORT": "6000"}) == 6000
+    assert service_discriminator({"INTEROP_SERVICE_DISCRIMINATOR": "0xF03"}) == 0xF03

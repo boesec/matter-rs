@@ -47,12 +47,12 @@ class ServiceBuild:
 
 def service_port(env: dict[str, str] | None = None) -> int:
     env = dict(os.environ if env is None else env)
-    return int(env.get("INTEROP_SERVICE_DUT_PORT") or DEFAULT_SERVICE_PORT, 0)
+    return int(env.get("INTEROP_SERVICE_DUT_PORT") or str(DEFAULT_SERVICE_PORT), 0)
 
 
 def service_discriminator(env: dict[str, str] | None = None) -> int:
     env = dict(os.environ if env is None else env)
-    return int(env.get("INTEROP_SERVICE_DISCRIMINATOR") or DEFAULT_SERVICE_DISCRIMINATOR, 0)
+    return int(env.get("INTEROP_SERVICE_DISCRIMINATOR") or str(DEFAULT_SERVICE_DISCRIMINATOR), 0)
 
 
 def cargo_target_dir(env: dict[str, str] | None = None) -> Path:
