@@ -10,7 +10,8 @@ publish = false
 
 [features]
 default = []
-# Feeds a bridge. Selected by the binary's `role-bridge` feature.
+# Feeds a bridge: the device mapping and the adapter itself. Selected by the binary's
+# `role-bridge` feature. Without it the crate holds the configuration types only.
 role-bridge = ["dep:matter-rs-bridge", "matter-rs-adapter-api/role-bridge"]
 
 [dependencies]
@@ -18,6 +19,23 @@ matter-rs-engine = { workspace = true, features = ["std"] }
 matter-rs-bridge = { workspace = true, features = ["std"], optional = true }
 matter-rs-adapter-api = { workspace = true, features = ["std"] }
 thiserror = { workspace = true, features = ["std"] }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+# The MQTT client; see the workspace manifest for why its TLS features are off.
+rumqttc = { workspace = true }
+# The adapter runs on tokio: sockets through rumqttc, the backoff timer, the node-state channel.
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
+
+[dev-dependencies]
+matter-rs-engine = { workspace = true, features = ["std", "testing"] }
+matter-rs-adapter-api = { workspace = true, features = ["std", "role-bridge", "testing"] }
+# An in-process MQTT broker for the integration tests, from the same project as the client.
+rumqttd = { workspace = true }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time", "macros", "net", "io-util"] }
+proptest = { workspace = true }
+toml = { workspace = true }
 
 [lints]
 workspace = true
