@@ -6,26 +6,26 @@
 //! 2. opens the state directory and builds the node identity, the network settings and the
 //!    attestation (the test credentials) from the configuration;
 //! 3. starts the rs-matter engine (on its own thread) with the bridge role on it;
-//! 4. starts the adapters on the bridge ([`start_adapters`], the wiring point of the adapter
-//!    supervisor);
-//! 5. pulls the bridge's events in one task, logs the node's lifecycle and hands device commands
-//!    to the adapters;
+//! 4. starts the adapters on the bridge under the adapter supervisor ([`start_adapters`], the
+//!    wiring point of the adapters: one instance per `[adapters.<id>]` table, each with the
+//!    `[devices.<id>]` tables that name it);
+//! 5. pulls the node's events from the supervisor in one task, logs the node's lifecycle and
+//!    keeps the adapters informed about the node's state;
 //! 6. waits for a stop signal, then stops the adapters and the bridge, in that order, and drops
-//!    the bridge, which owns the engine. The engine flushes its deferred persistence before its
-//!    thread ends, and the drop waits for that thread, so the state directory is complete when
-//!    the process exits.
+//!    the supervisor, which owns the bridge and so the engine. The engine flushes its deferred
+//!    persistence before its thread ends, and the drop waits for that thread, so the state
+//!    directory is complete when the process exits.
 //!
 //! A second stop signal during the shutdown ends the process at once with exit code 1, as does a
 //! shutdown that takes longer than [`SHUTDOWN_TIMEOUT`].
 
-use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
-use matter_rs_config::{AdapterConfig, Config, Error as ConfigError, SystemEnvironment, load};
+use matter_rs_config::{Config, Error as ConfigError, SystemEnvironment, load};
 use matter_rs_engine::{
     Attestation, DirectoryStorage, NetworkConfig, NodeIdentity, ProductId, StopReason, Storage,
     VendorId,
@@ -38,7 +38,17 @@ use crate::signals::StopSignals;
 use crate::{EXIT_FAILURE, error_chain};
 
 #[cfg(feature = "role-bridge")]
-use matter_rs_bridge::{Bridge, BridgeEvent, CommandEvent};
+use matter_rs_adapter_api::{AdapterId, Supervisor, SupervisorOptions, TokioTimer};
+#[cfg(all(feature = "role-bridge", feature = "adapter-mqtt"))]
+use matter_rs_adapter_mqtt::{BridgeIdentity, MqttAdapter, NodeState};
+#[cfg(feature = "role-bridge")]
+use matter_rs_bridge::{Bridge, BridgeEvent, Options};
+#[cfg(feature = "role-bridge")]
+use matter_rs_config::AdapterConfig;
+#[cfg(all(feature = "role-bridge", feature = "adapter-mqtt"))]
+use tokio::sync::watch;
+#[cfg(feature = "role-bridge")]
+use tokio::task::JoinHandle;
 
 /// How long the shutdown may take before the process gives up and exits with code 1. Shorter
 /// than the stop timeout of the systemd unit (20 seconds), so that the service reports the
@@ -103,8 +113,8 @@ pub(crate) fn run(path: &Path) -> ExitCode {
         }
     };
     let outcome = runtime.block_on(serve(loaded.config));
-    // The engine thread has been joined inside `serve` (through the bridge's drop); nothing that still runs on the runtime
-    // holds state that must reach the disk.
+    // The engine thread has been joined inside `serve` (through the supervisor's drop); nothing
+    // that still runs on the runtime holds state that must reach the disk.
     runtime.shutdown_timeout(Duration::from_secs(1));
     match outcome {
         Ok(()) => {
@@ -188,54 +198,165 @@ pub(crate) fn unique_id(storage: &dyn Storage) -> Result<String, StartError> {
     Ok(id)
 }
 
-/// The adapters running on the bridge.
+/// The adapters running on the bridge, under the supervisor.
 ///
-/// This is the wiring point of the adapter supervisor: [`start_adapters`] starts one adapter per
-/// configured instance on the bridge, [`Adapters::dispatch`] hands each device command to the
-/// adapter that owns the device, and [`Adapters::stop`] stops them all before the bridge stops.
-/// This build starts no adapters yet; configured instances are reported and left alone.
-#[derive(Debug, Default)]
+/// This is the wiring point of the adapters: [`start_adapters`] adds one adapter instance per
+/// `[adapters.<id>]` table to the supervisor through the adapter's factory, with the
+/// `[devices.<id>]` tables that name the instance and a channel that tells the adapter the
+/// node's state; [`Adapters::run`] runs the supervisor, [`Adapters::stop`] stops the adapters
+/// and the bridge.
+#[cfg(feature = "role-bridge")]
 pub(crate) struct Adapters {
-    _private: (),
+    supervisor: Supervisor,
+    run: Option<JoinHandle<Result<(), matter_rs_adapter_api::Error>>>,
+    node_state: NodeStateFeed,
 }
 
+/// What the adapters learn about the node: whether it is commissioned, whether a commissioning
+/// window is open and how many fabrics it has. Fed from the node's events; read by the adapters
+/// that publish it (the MQTT adapter's bridge instance).
+#[cfg(feature = "role-bridge")]
+#[derive(Clone)]
+struct NodeStateFeed {
+    #[cfg(feature = "adapter-mqtt")]
+    sender: Arc<watch::Sender<Option<NodeState>>>,
+}
+
+#[cfg(feature = "role-bridge")]
+impl NodeStateFeed {
+    fn new() -> Self {
+        Self {
+            #[cfg(feature = "adapter-mqtt")]
+            sender: Arc::new(watch::channel(None).0),
+        }
+    }
+
+    /// Reads the node's state from the bridge and passes it on.
+    #[allow(clippy::unused_async, unused_variables)]
+    async fn refresh(&self, bridge: &Bridge) {
+        #[cfg(feature = "adapter-mqtt")]
+        {
+            let (commissioning, fabrics) =
+                tokio::join!(bridge.commissioning_state(), bridge.fabrics());
+            match (commissioning, fabrics) {
+                (Ok(state), Ok(fabrics)) => {
+                    self.sender.send_replace(Some(NodeState {
+                        commissioned: state.commissioned,
+                        window_open: state.window.is_some(),
+                        fabric_count: u32::try_from(fabrics.len()).unwrap_or(u32::MAX),
+                    }));
+                }
+                (Err(error), _) | (_, Err(error)) => {
+                    warn!(error = %error_chain(&error), "node state unknown");
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "role-bridge")]
 impl Adapters {
-    /// Hands a device command to the adapter that owns the device.
-    #[cfg(feature = "role-bridge")]
-    fn dispatch(&self, command: &CommandEvent) {
-        // No adapter adds devices yet, so no command can arrive; one that does is dropped and
-        // the bridge answers the client.
-        debug!(
-            device = command.key.as_str(),
-            "device command without an adapter, dropped"
-        );
+    /// Runs the supervisor: every adapter starts, the bridge's events are pumped.
+    fn run(&mut self) {
+        let supervisor = self.supervisor.clone();
+        self.run = Some(tokio::spawn(async move { supervisor.run().await }));
+        for (id, health) in self.supervisor.health() {
+            debug!(adapter = %id, health = %health, "adapter added");
+        }
     }
 
-    /// Stops every adapter; the bridge is still running while they stop.
-    #[allow(clippy::unused_async)]
-    async fn stop(&self) {
-        debug!("adapters stopped");
+    /// Stops every adapter, then the bridge; the supervisor's run ends.
+    async fn stop(&mut self) {
+        self.supervisor.shutdown();
+        match self.run.take() {
+            Some(run) => match run.await {
+                Ok(Ok(())) => debug!("adapters and bridge stopped"),
+                Ok(Err(error)) => {
+                    warn!(error = %error_chain(&error), "the supervisor did not stop cleanly");
+                }
+                Err(error) => warn!(%error, "the supervisor task failed"),
+            },
+            None => {
+                if let Err(error) = self.supervisor.bridge().stop().await {
+                    warn!(error = %error_chain(&error), "the bridge did not stop cleanly");
+                }
+            }
+        }
     }
 }
 
-/// Starts the adapters configured in `instances` on the bridge.
+/// Adds the configured adapter instances to the supervisor, each with its devices.
 ///
 /// # Errors
 ///
-/// A start-up error when an adapter cannot start.
+/// A start-up error when an instance cannot be built: its configuration or one of its device
+/// mappings is not usable.
 #[cfg(feature = "role-bridge")]
-pub(crate) async fn start_adapters(
-    _bridge: &Arc<Bridge>,
-    instances: &BTreeMap<String, AdapterConfig>,
-) -> Result<Adapters, StartError> {
-    for (id, instance) in instances {
-        warn!(
-            adapter = id.as_str(),
-            kind = instance.kind(),
-            "adapter instance configured, but this build does not start adapters yet"
-        );
+#[cfg_attr(not(feature = "adapter-mqtt"), allow(unused_variables))]
+pub(crate) fn start_adapters(adapters: &Adapters, config: &Config) -> Result<(), StartError> {
+    for (id, instance) in &config.adapters {
+        let adapter_id = AdapterId::new(instance_kind(instance), id.clone());
+        match instance {
+            #[cfg(feature = "adapter-mqtt")]
+            AdapterConfig::Mqtt(mqtt) => {
+                let devices = config.mqtt_devices(id);
+                let identity = BridgeIdentity {
+                    vendor_id: config.node.vendor_id,
+                    product_id: config.node.product_id,
+                };
+                let node_state = adapters.node_state.sender.subscribe();
+                // Build once now so that a configuration error is a start-up error, not a
+                // failed instance in the health report.
+                MqttAdapter::build(
+                    adapter_id.clone(),
+                    mqtt.clone(),
+                    devices.clone(),
+                    Some(identity),
+                    node_state.clone(),
+                )
+                .map_err(|error| {
+                    StartError::new(&format!("adapter `{id}` cannot start"), &error)
+                })?;
+                let (mqtt, factory_id) = (mqtt.clone(), adapter_id.clone());
+                let device_count = devices.len();
+                adapters
+                    .supervisor
+                    .add(adapter_id, move || {
+                        MqttAdapter::build(
+                            factory_id.clone(),
+                            mqtt.clone(),
+                            devices.clone(),
+                            Some(identity),
+                            node_state.clone(),
+                        )
+                    })
+                    .map_err(|error| {
+                        StartError::new(&format!("adapter `{id}` cannot be added"), &error)
+                    })?;
+                info!(
+                    adapter = id.as_str(),
+                    kind = instance.kind(),
+                    devices = device_count,
+                    "adapter instance added"
+                );
+            }
+            #[allow(unreachable_patterns)]
+            other => {
+                let _ = adapter_id;
+                return Err(StartError(format!(
+                    "adapter `{id}` is of kind `{}`, which this build cannot start",
+                    other.kind()
+                )));
+            }
+        }
     }
-    Ok(Adapters::default())
+    Ok(())
+}
+
+/// The kind of an adapter instance as a static string, for its id.
+#[cfg(feature = "role-bridge")]
+fn instance_kind(instance: &AdapterConfig) -> &'static str {
+    instance.kind()
 }
 
 /// Starts the node and runs it until a stop signal.
@@ -275,31 +396,41 @@ async fn serve_bridge(config: Config, mut signals: StopSignals) -> Result<(), St
     let identity = identity(&config, unique_id(&*storage)?);
     let network = network(&config);
     let port = network.port;
-    let bridge = Bridge::start(
+    let bridge = Bridge::start_with(
         Box::new(RsMatterEngine::new()),
         identity,
         network,
         Attestation::Test,
         storage,
+        Options {
+            timer: Some(Arc::new(TokioTimer)),
+            ..Options::default()
+        },
     )
     .await
-    .map_err(|error| StartError::new("the node did not start", &error));
-    let bridge = match bridge {
-        Ok(bridge) => Arc::new(bridge),
-        Err(error) => return Err(error),
-    };
+    .map_err(|error| StartError::new("the node did not start", &error))?;
 
-    let adapters = match start_adapters(&bridge, &config.adapters).await {
-        Ok(adapters) => Arc::new(adapters),
-        Err(error) => {
-            let _ = bridge.stop().await;
-            drop_bridge(bridge).await;
-            return Err(error);
-        }
+    let mut adapters = Adapters {
+        supervisor: Supervisor::new(bridge, SupervisorOptions::default()),
+        run: None,
+        node_state: NodeStateFeed::new(),
     };
-    let mut events = tokio::spawn(pump_events(Arc::clone(&bridge), Arc::clone(&adapters)));
+    adapters
+        .node_state
+        .refresh(adapters.supervisor.bridge())
+        .await;
+    if let Err(error) = start_adapters(&adapters, &config) {
+        let _ = adapters.supervisor.bridge().stop().await;
+        drop_adapters(adapters).await;
+        return Err(error);
+    }
+    adapters.run();
+    let mut events = tokio::spawn(pump_events(
+        adapters.supervisor.clone(),
+        adapters.node_state.clone(),
+    ));
 
-    match bridge.commissioning_state().await {
+    match adapters.supervisor.bridge().commissioning_state().await {
         Ok(state) => {
             info!(
                 port,
@@ -327,7 +458,8 @@ async fn serve_bridge(config: Config, mut signals: StopSignals) -> Result<(), St
                 Ok(other) => format!("{other:?}"),
                 Err(error) => format!("the event task ended: {error}"),
             };
-            drop_bridge(bridge).await;
+            adapters.stop().await;
+            drop_adapters(adapters).await;
             return Err(StartError(format!("the node stopped unexpectedly: {reason}")));
         }
     };
@@ -345,14 +477,11 @@ async fn serve_bridge(config: Config, mut signals: StopSignals) -> Result<(), St
 
     let shutdown = async move {
         adapters.stop().await;
-        if let Err(error) = bridge.stop().await {
-            warn!(error = %error_chain(&error), "the bridge did not stop cleanly");
-        }
         match events.await {
             Ok(reason) => debug!(?reason, "event stream ended"),
             Err(error) => warn!(%error, "the event task failed"),
         }
-        drop_bridge(bridge).await;
+        drop_adapters(adapters).await;
     };
     tokio::time::timeout(SHUTDOWN_TIMEOUT, shutdown)
         .await
@@ -364,44 +493,52 @@ async fn serve_bridge(config: Config, mut signals: StopSignals) -> Result<(), St
         })
 }
 
-/// Drops the last reference to the bridge on a blocking thread. The bridge owns the engine, and
-/// dropping the rs-matter engine stops a node that still runs and joins the engine thread after
-/// its persistence has flushed; the service waits for that before it exits.
+/// Drops the last reference to the supervisor, and with it the bridge, on a blocking thread.
+/// The bridge owns the engine, and dropping the rs-matter engine stops a node that still runs
+/// and joins the engine thread after its persistence has flushed; the service waits for that
+/// before it exits.
 #[cfg(feature = "role-bridge")]
-async fn drop_bridge(bridge: Arc<Bridge>) {
-    if let Err(error) = tokio::task::spawn_blocking(move || drop(bridge)).await {
+async fn drop_adapters(adapters: Adapters) {
+    if let Err(error) = tokio::task::spawn_blocking(move || drop(adapters)).await {
         warn!(%error, "joining the engine thread failed");
     }
 }
 
-/// Pulls the bridge's events until the node stops and returns why it stopped.
+/// Pulls the node's events from the supervisor until the node stops and returns why it stopped.
+/// Device commands never arrive here: the supervisor routes them to the adapters. Every change
+/// of the commissioning state or the fabrics is passed on to the adapters.
 #[cfg(feature = "role-bridge")]
-async fn pump_events(bridge: Arc<Bridge>, adapters: Arc<Adapters>) -> StopReason {
+async fn pump_events(supervisor: Supervisor, node_state: NodeStateFeed) -> StopReason {
+    let events = supervisor.events();
     loop {
-        match bridge.next_event().await {
-            Ok(BridgeEvent::Command(command)) => adapters.dispatch(&command),
-            Ok(BridgeEvent::CommissioningChanged(state)) => info!(
-                commissioned = state.commissioned,
-                window = ?state.window,
-                "commissioning state changed"
-            ),
-            Ok(BridgeEvent::FabricAdded(fabric)) => info!(
-                fabric = fabric.index.raw(),
-                vendor_id = fabric.vendor_id.raw(),
-                label = fabric.label.as_str(),
-                "joined a fabric"
-            ),
-            Ok(BridgeEvent::FabricRemoved(index)) => {
-                info!(fabric = index.raw(), "left a fabric");
+        match events.next().await {
+            Some(BridgeEvent::CommissioningChanged(state)) => {
+                info!(
+                    commissioned = state.commissioned,
+                    window = ?state.window,
+                    "commissioning state changed"
+                );
+                node_state.refresh(supervisor.bridge()).await;
             }
-            Ok(BridgeEvent::Stopped(reason)) => {
+            Some(BridgeEvent::FabricAdded(fabric)) => {
+                info!(
+                    fabric = fabric.index.raw(),
+                    vendor_id = fabric.vendor_id.raw(),
+                    label = fabric.label.as_str(),
+                    "joined a fabric"
+                );
+                node_state.refresh(supervisor.bridge()).await;
+            }
+            Some(BridgeEvent::FabricRemoved(index)) => {
+                info!(fabric = index.raw(), "left a fabric");
+                node_state.refresh(supervisor.bridge()).await;
+            }
+            Some(BridgeEvent::Stopped(reason)) => {
                 info!(?reason, "node stopped");
                 return reason;
             }
-            Ok(other) => debug!(?other, "bridge event"),
-            Err(error) => {
-                return StopReason::Failed(error_chain(&error));
-            }
+            Some(other) => debug!(?other, "bridge event"),
+            None => return StopReason::Failed(String::from("the event stream ended")),
         }
     }
 }
