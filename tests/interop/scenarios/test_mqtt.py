@@ -152,7 +152,8 @@ def test_mqtt_bridge_publishes_its_state(mqtt_service_dut: MqttServiceDut, mqtt_
     assert info["matter"]["vendor_id"] == 0xFFF1
     assert isinstance(info["pid"], int)
     assert mqtt_broker.read_retained_val(f"{INSTANCE}/status/commissioning/commissioned") is False
-    assert mqtt_broker.read_retained_val(f"{INSTANCE}/status/commissioning/window_open") is False
+    # An uncommissioned node has its basic commissioning window open.
+    assert mqtt_broker.read_retained_val(f"{INSTANCE}/status/commissioning/window_open") is True
     assert mqtt_broker.read_retained_val(f"{INSTANCE}/status/commissioning/fabric_count") == 0
     assert mqtt_broker.read_retained_val(f"{INSTANCE}/status/devices/lamp/reachable") is True
     assert mqtt_broker.read_retained_val(f"{INSTANCE}/status/devices/thermometer/reachable") is True
@@ -165,6 +166,7 @@ def test_mqtt_bridge_publishes_its_state(mqtt_service_dut: MqttServiceDut, mqtt_
 def test_mqtt_status_reaches_the_controller(mqtt_commissioned: ChipTool, mqtt_broker: MosquittoBroker) -> None:
     """A status published by the source shows up as the attribute chip-tool reads."""
     assert mqtt_broker.read_retained_val(f"{INSTANCE}/status/commissioning/commissioned") is True
+    assert mqtt_broker.read_retained_val(f"{INSTANCE}/status/commissioning/window_open") is False
     assert mqtt_broker.read_retained_val(f"{INSTANCE}/status/commissioning/fabric_count") == 1
 
     level = mqtt_commissioned.read_value(
@@ -172,7 +174,8 @@ def test_mqtt_status_reaches_the_controller(mqtt_commissioned: ChipTool, mqtt_br
     )
     assert level == str(percent_to_level(50)), f"CurrentLevel from the retained 50 %: {level}"
     mqtt_broker.publish(f"{SOURCE}/status/lamp/level", "75", retain=True)
-    level = read_until("levelcontrol", "current-level", "CurrentLevel", LAMP_ENDPOINT, str(percent_to_level(75)))
+    expected = str(percent_to_level(75))
+    level = read_until(mqtt_commissioned, "levelcontrol", "current-level", "CurrentLevel", LAMP_ENDPOINT, expected)
     assert level == str(percent_to_level(75)), f"CurrentLevel after 75 %: {level}"
 
     temperature = mqtt_commissioned.read_value(
@@ -208,11 +211,15 @@ def test_mqtt_command_becomes_a_set(mqtt_commissioned: ChipTool, mqtt_broker: Mo
 def test_mqtt_reachability_follows_the_source(mqtt_commissioned: ChipTool, mqtt_broker: MosquittoBroker) -> None:
     """`source/connected` 0 makes the devices unreachable; 2 brings them back."""
     mqtt_broker.publish(f"{SOURCE}/connected", "0", retain=True)
-    reachable = read_until("bridgeddevicebasicinformation", "reachable", "Reachable", LAMP_ENDPOINT, "FALSE")
+    reachable = read_until(
+        mqtt_commissioned, "bridgeddevicebasicinformation", "reachable", "Reachable", LAMP_ENDPOINT, "FALSE"
+    )
     assert reachable == "FALSE"
     assert mqtt_broker.read_retained_val(f"{INSTANCE}/status/devices/lamp/reachable") is False
     mqtt_broker.publish(f"{SOURCE}/connected", "2", retain=True)
-    reachable = read_until("bridgeddevicebasicinformation", "reachable", "Reachable", THERMOMETER_ENDPOINT, "TRUE")
+    reachable = read_until(
+        mqtt_commissioned, "bridgeddevicebasicinformation", "reachable", "Reachable", THERMOMETER_ENDPOINT, "TRUE"
+    )
     assert reachable == "TRUE"
     assert mqtt_broker.read_retained_val(f"{INSTANCE}/status/devices/thermometer/reachable") is True
 
@@ -243,7 +250,8 @@ def test_mqtt_broker_restart_recovers(
     # Values flow again: the subscriptions were made anew.
     mqtt_broker.publish(f"{SOURCE}/connected", "2", retain=True)
     mqtt_broker.publish(f"{SOURCE}/status/lamp/level", "10", retain=True)
-    level = read_until("levelcontrol", "current-level", "CurrentLevel", LAMP_ENDPOINT, str(percent_to_level(10)))
+    expected = str(percent_to_level(10))
+    level = read_until(mqtt_commissioned, "levelcontrol", "current-level", "CurrentLevel", LAMP_ENDPOINT, expected)
     assert level == str(percent_to_level(10)), f"CurrentLevel after the restart: {level}"
 
 
