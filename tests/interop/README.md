@@ -32,8 +32,8 @@ uploads `logs/` as an artefact.
 | Path | Purpose |
 |---|---|
 | `conftest.py` | Fixtures: configuration, redactor, harness log, both DUTs, their chip-tools, the commissioned DUTs |
-| `harness/` | The harness: process control with log collection (`process.py`), redaction (`redact.py`), chip-tool with its interactive session (`chiptool.py`), the engine DUT driver (`enginedut.py`), the shell (`shell.py`), the Python framework runner (`pythontc.py`), pins and configuration (`config.py`), manual pairing code (`pairing.py`) |
-| `scenarios/test_*.py` | The scenarios (below); `test_engine.py` holds the engine DUT scenarios |
+| `harness/` | The harness: process control with log collection (`process.py`), redaction (`redact.py`), chip-tool with its interactive session (`chiptool.py`), the engine DUT driver (`enginedut.py`), the service DUT (`servicedut.py`), the Mosquitto broker and the service with an MQTT adapter (`mqtt.py`), the shell (`shell.py`), the Python framework runner (`pythontc.py`), pins and configuration (`config.py`), manual pairing code (`pairing.py`) |
+| `scenarios/test_*.py` | The scenarios (below); `test_engine.py` holds the engine DUT scenarios, `test_service.py` and `test_mqtt.py` the service scenarios |
 | `selftest/test_*.py` | Tests of the harness itself; run without Docker |
 | `containers/images.toml` | Every image with tag and digest; the harness pulls by digest |
 | `containers/matterjs/` | `Dockerfile`, `package.json`, `package-lock.json` and `device.mjs` of the matter.js image |
@@ -46,6 +46,7 @@ uploads `logs/` as an artefact.
 | Component | Pin |
 |---|---|
 | connectedhomeip certification image | `connectedhomeip/chip-cert-bins:e91ea83caae4adb1871aa4bbe93c4be2dd9e1abf`, manifest digest `sha256:81a2b68f46e52e8352527a67c6487e0da57fdb166490e6af091d6e4f3974d9db`, `linux/arm64`, built 2026-08-19 |
+| Eclipse Mosquitto (MQTT scenarios) | `eclipse-mosquitto:2.0.23`, index digest `sha256:6a332cc7a8dbe011cbc076180cbb76b37c6f0f55809682ea08e7980ef0112ad9` (multi-architecture; the harness pulls it on first use) |
 | connectedhomeip commit | `e91ea83caae4adb1871aa4bbe93c4be2dd9e1abf` ("Update DM at 1.6.1"), the SDK tag of the official Matter 1.6.1 Test Harness |
 | matter.js | `@matter/main` and `@matter/nodejs-shell` **0.18.0** (`containers/matterjs/package-lock.json`) |
 | Node base image | `node:22-bookworm-slim`, digest `sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da` |
@@ -147,6 +148,32 @@ engine's dependencies, so only the binary's own crates are compiled.
 |---|---|
 | `test_service_commission_restart_keeps_fabric` | chip-tool commissions the service; the aggregator's `PartsList` is empty (no adapters yet); `SIGTERM` stops it with exit code 0 within the 20-second stop timeout; restarted on the same state directory, the node reports itself commissioned and chip-tool reads `PartsList` and the configured `NodeLabel` without commissioning again |
 | `test_service_config_text_is_complete` | the generated configuration holds the passcode, discriminator, port, interface, state directory and the bridge role (no Docker needed) |
+
+### The service with the MQTT adapter
+
+`scenarios/test_mqtt.py` runs the service a second time with an `mqtt` adapter and two devices
+(`harness/mqtt.py`): port `INTEROP_MQTT_SERVICE_DUT_PORT` (5543), discriminator
+`INTEROP_MQTT_DISCRIMINATOR` (3843), chip-tool node id 31, and an Eclipse Mosquitto broker in a
+container with host networking on port `INTEROP_MQTT_PORT` (1884, so it never clashes with a
+broker of the machine), anonymous and without persistence. The broker container is not removed
+on stop, because the restart scenario stops and starts it under the same name. The scenarios play
+the source adapter `source` with the image's own `mosquitto_pub` and `mosquitto_sub` (through
+`docker exec`, or a throw-away container for a long-lived subscriber); no Python MQTT client is
+needed. Before the service starts, the source's retained state is on the broker
+(`source/connected` `2`, the lamp's `on_off` and `level`, the thermometer's temperature), so both
+devices are reachable from the first moment. The devices: `lamp`, a dimmable light at endpoint 2
+whose level is a percentage (`scale = [0, 100]`), and `thermometer`, a temperature sensor at
+endpoint 3 whose source publishes degrees (`factor = 100`). The contract the scenarios check is
+[`doc/mqtt.md`](../../doc/mqtt.md).
+
+| Test | What it proves |
+|---|---|
+| `test_mqtt_bridge_publishes_its_state` | the bridge is an mqtt-smarthome instance: retained `matter/connected` `2`, `matter/info` with `name`, `spec` `2.0`, `maintenance` `false` and the vendor id, the commissioning items (`commissioned` false, `window_open` false, `fabric_count` 0 before pairing), both devices' `reachable` true; nothing under `matter/#` carries a pairing code or an onboarding payload |
+| `test_mqtt_status_reaches_the_controller` | after chip-tool commissioned the node (`commissioned` true, `fabric_count` 1 on the broker), `CurrentLevel` shows the retained 50 % as 128 and a published 75 % as 191, `MeasuredValue` shows 21.5 degrees as 2150, `Reachable` is true |
+| `test_mqtt_command_becomes_a_set` | chip-tool's `on` is published as `source/set/lamp/on_off true`, plain; no `source/status/...` message follows from the adapter (no echo); the bridge serves `OnOff` true meanwhile |
+| `test_mqtt_reachability_follows_the_source` | `source/connected` `0` makes `Reachable` false and `matter/status/devices/lamp/reachable` false; `2` brings both devices back |
+| `test_mqtt_broker_restart_recovers` | after `docker stop` the service logs the lost connection and keeps the devices reachable; after `docker start` it reconnects, `matter/connected` `2`, `matter/info` and the commissioning items are on the broker again (the broker lost its retained state with the restart), and a new level flows to `CurrentLevel` (the subscriptions were made anew) |
+| `test_mqtt_sections_are_complete` | the appended configuration names the adapter, the broker port and both devices; the percentage-to-level arithmetic the scenarios use (no Docker needed) |
 
 `selftest/` covers the harness without Docker: the manual pairing code against the well-known
 development vector (`20202021`/`3840` gives `34970112332`), redaction and secret capture, process
@@ -284,6 +311,10 @@ All settings are environment variables with defaults (`harness/config.py`):
 | `INTEROP_ENGINE_INTERFACE` | unset | Network interface the engine example announces on (`--interface`); the engine chooses one when unset |
 | `INTEROP_ENGINE_DUT_PORT` | `5541` | UDP port of the engine example |
 | `INTEROP_ENGINE_DISCRIMINATOR` | `3841` | Long discriminator of the engine example |
+| `INTEROP_SERVICE_DUT` | unset | Path of the built `matter-rs` binary; without it the service scenarios build it with `cargo build --release -p matter-rs` |
+| `INTEROP_SERVICE_DUT_PORT`, `INTEROP_SERVICE_DISCRIMINATOR` | `5542`, `3842` | UDP port and long discriminator of the service DUT |
+| `INTEROP_MQTT_PORT` | `1884` | Port of the Mosquitto broker of the MQTT scenarios |
+| `INTEROP_MQTT_SERVICE_DUT_PORT`, `INTEROP_MQTT_DISCRIMINATOR` | `5543`, `3843` | UDP port and long discriminator of the service with the MQTT adapter |
 
 ### Swapping the device under test
 

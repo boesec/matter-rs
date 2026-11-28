@@ -8,6 +8,11 @@
 #
 # [node] is the base image of the matter.js container in matterjs/; its Dockerfile repeats the
 # same digest in its FROM line.
+#
+# [mosquitto] is the Eclipse Mosquitto broker of the MQTT scenarios (scenarios/test_mqtt.py),
+# run with host networking on port 1884, anonymous, without persistence. Its digest is the
+# multi-architecture index digest of the tag, so the same pin serves the arm64 runner and an
+# amd64 machine; the harness pulls it on first use.
 
 [chip]
 name = "connectedhomeip/chip-cert-bins"
@@ -20,4 +25,10 @@ commit = "e91ea83caae4adb1871aa4bbe93c4be2dd9e1abf"
 name = "node"
 tag = "22-bookworm-slim"
 digest = "sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da"
+platform = "linux/arm64"
+
+[mosquitto]
+name = "eclipse-mosquitto"
+tag = "2.0.23"
+digest = "sha256:6a332cc7a8dbe011cbc076180cbb76b37c6f0f55809682ea08e7980ef0112ad9"
 platform = "linux/arm64"
