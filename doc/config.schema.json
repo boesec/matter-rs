@@ -39,6 +39,13 @@
         "$ref": "#/$defs/AdapterConfig"
       },
       "description": "Adapter instances, one table `[adapters.<id>]` per instance. `kind` selects the adapter;\nthe other keys depend on the kind. A kind needs a build with the Cargo feature\n`adapter-<kind>`."
+    },
+    "devices": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/DeviceSection"
+      },
+      "description": "Bridged devices, one table `[devices.<id>]` per device. The id is the device's stable\nkey; every device names the adapter that feeds it and, in `mapping`, where the adapter\nfinds it. Needs the bridge role."
     }
   },
   "required": [
@@ -280,8 +287,190 @@
       "description": "The bridge role."
     },
     "AdapterConfig": {
-      "not": {},
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "mqtt"
+            },
+            "url": {
+              "type": "string",
+              "description": "Broker URL: `mqtt://host[:port]` (port 1883 when absent). `mqtts://` is reserved for a\nTLS build. The URL may carry `user:password@`, but the `username` and `password` keys\nare the recommended place for credentials and win over the URL.",
+              "minLength": 1
+            },
+            "username": {
+              "type": "string",
+              "description": "User name for the broker.",
+              "minLength": 1
+            },
+            "password": {
+              "description": "Password for the broker. A secret: write it here, or read it with `{ env = \"NAME\" }` or\n`{ file = \"PATH\" }`.",
+              "$ref": "#/$defs/SecretText"
+            },
+            "client_id": {
+              "type": "string",
+              "description": "MQTT client id. Default `matter-rs-<id>` with the id of this adapter table.",
+              "minLength": 1
+            },
+            "name": {
+              "type": "string",
+              "description": "The instance name of the bridge on this broker: the first topic level of its own items,\n`<name>/connected`, `<name>/info`, `<name>/status/...`. Must not contain `/`, `+` or `#`.",
+              "minLength": 1,
+              "default": "matter"
+            },
+            "tls_ca": {
+              "type": "string",
+              "description": "CA certificate file (PEM) for `mqtts://` with a private CA. Reserved for a TLS build."
+            },
+            "json_payloads": {
+              "type": "boolean",
+              "description": "Publish the bridge's status items as `{ \"val\": ..., \"ts\": ..., \"lc\": ... }` objects\n(the mqtt-smarthome default). `false` publishes plain values.",
+              "default": true
+            },
+            "set_json": {
+              "type": "boolean",
+              "description": "Publish `set` messages for the devices as `{ \"val\": ... }` objects instead of plain\nvalues.",
+              "default": false
+            },
+            "keep_alive": {
+              "type": "integer",
+              "format": "uint16",
+              "minimum": 0,
+              "maximum": 65535,
+              "description": "Seconds between keep-alive pings when nothing else is sent; `0` switches them off.",
+              "default": 30
+            },
+            "reconnect": {
+              "$ref": "#/$defs/Reconnect",
+              "description": "How the adapter reconnects after the broker connection was lost."
+            }
+          },
+          "required": [
+            "kind",
+            "url"
+          ],
+          "description": "An MQTT broker; see the MQTT contract in `doc/mqtt.md`."
+        }
+      ],
       "description": "One adapter instance: `kind` selects the adapter, the other keys belong to it."
+    },
+    "SecretText": {
+      "description": "A secret text: the text itself, `{ env = \"NAME\" }` to read it from an environment variable, or `{ file = \"PATH\" }` to read it from a file (surrounding whitespace is ignored).",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "env": {
+              "type": "string",
+              "description": "Name of the environment variable that holds the secret."
+            }
+          },
+          "required": [
+            "env"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "file": {
+              "type": "string",
+              "description": "Path of the file that holds the secret. A relative path is relative to the directory of the configuration file."
+            }
+          },
+          "required": [
+            "file"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Reconnect": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "initial": {
+          "type": "number",
+          "format": "double",
+          "description": "The delay before the first reconnect attempt, in seconds.",
+          "minimum": 0.01,
+          "default": 1.0
+        },
+        "max": {
+          "type": "number",
+          "format": "double",
+          "description": "The longest delay between two attempts, in seconds.",
+          "minimum": 0.01,
+          "default": 60.0
+        }
+      },
+      "description": "Reconnect delays after a lost broker connection: the delay starts at `initial`, doubles with\nevery failed attempt and never exceeds `max`. A successful connection resets it."
+    },
+    "DeviceSection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "The device kind: `on-off-light`, `dimmable-light`, `color-temperature-light`,\n`extended-color-light`, `on-off-plug-in-unit`, `contact-sensor`, `temperature-sensor`,\n`humidity-sensor`, `pressure-sensor`, `light-sensor`, `occupancy-sensor` or\n`generic-switch`. A composed device lists its kinds in `parts` instead.",
+          "minLength": 1
+        },
+        "adapter": {
+          "type": "string",
+          "description": "The id of the `[adapters.<id>]` table that feeds the device.",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "description": "The label controllers show; the table's id when absent.",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "parts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PartSection"
+          },
+          "description": "The parts of a composed device, in order, each a kind with an optional label (a power\nstrip with two sockets and a sensor). Replaces `kind`."
+        },
+        "mapping": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Where the adapter finds the device. The keys depend on the adapter's kind and are\nlisted per kind in the reference."
+        }
+      },
+      "required": [
+        "adapter",
+        "mapping"
+      ],
+      "description": "A bridged device fed by an adapter."
+    },
+    "PartSection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "The device kind of the part, as for `kind` of the device.",
+          "minLength": 1
+        },
+        "label": {
+          "type": "string",
+          "description": "The label of the part, shown as a semantic tag when several parts share a kind.",
+          "minLength": 1,
+          "maxLength": 32
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "description": "One part of a composed device."
     }
   }
 }

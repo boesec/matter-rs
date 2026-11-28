@@ -10,6 +10,9 @@
 //!    every build, so that a kind whose feature is missing is reported as "not compiled in",
 //!    naming the feature, instead of as an unknown kind.
 //!
+//! An adapter that feeds devices also exports the type of a device's `mapping` table; it is
+//! added to [`mapping_schema`], which the device check and the reference use.
+//!
 //! The schema of the whole file therefore contains exactly the adapter kinds the build has.
 //! Builds of this crate's own unit tests add a test adapter to prove the mechanism.
 
@@ -34,6 +37,11 @@ pub fn adapter_kinds() -> &'static [AdapterKind] {
 }
 
 const KINDS: &[AdapterKind] = &[
+    AdapterKind {
+        kind: "mqtt",
+        feature: "adapter-mqtt",
+        compiled_in: cfg!(feature = "adapter-mqtt"),
+    },
     #[cfg(test)]
     AdapterKind {
         kind: "test",
@@ -58,6 +66,9 @@ const KINDS: &[AdapterKind] = &[
 )]
 #[non_exhaustive]
 pub enum AdapterConfig {
+    /// An MQTT broker; see the MQTT contract in `doc/mqtt.md`.
+    #[cfg(feature = "adapter-mqtt")]
+    Mqtt(matter_rs_adapter_mqtt::Config),
     /// An adapter that exists only in this crate's unit tests.
     #[cfg(test)]
     Test(TestAdapterConfig),
@@ -68,10 +79,33 @@ impl AdapterConfig {
     #[must_use]
     pub fn kind(&self) -> &'static str {
         match *self {
+            #[cfg(feature = "adapter-mqtt")]
+            Self::Mqtt(_) => "mqtt",
             #[cfg(test)]
             Self::Test(_) => "test",
         }
     }
+}
+
+/// The JSON schema of the `mapping` table of a device on an adapter of `kind`, or `None` when
+/// the kind is not compiled in or takes no devices.
+#[must_use]
+pub(crate) fn mapping_schema(kind: &str) -> Option<serde_json::Value> {
+    match kind {
+        #[cfg(feature = "adapter-mqtt")]
+        "mqtt" => Some(crate::schema::schema_of::<matter_rs_adapter_mqtt::Mapping>()),
+        _ => None,
+    }
+}
+
+/// The kinds of this build whose adapters take devices, for the reference.
+#[must_use]
+pub(crate) fn kinds_with_devices() -> Vec<&'static str> {
+    KINDS
+        .iter()
+        .filter(|kind| kind.compiled_in && mapping_schema(kind.kind).is_some())
+        .map(|kind| kind.kind)
+        .collect()
 }
 
 /// Configuration of the test adapter.

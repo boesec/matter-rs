@@ -9,7 +9,9 @@ use crate::schema::config_schema;
 use crate::validate::Validator;
 
 /// The order in which the sections are documented; sections not listed follow in schema order.
-const SECTION_ORDER: [&str; 6] = ["node", "network", "state", "log", "bridge", "adapters"];
+const SECTION_ORDER: [&str; 7] = [
+    "node", "network", "state", "log", "bridge", "adapters", "devices",
+];
 
 /// The configuration reference as Markdown, with a final newline.
 #[must_use]
@@ -67,8 +69,69 @@ pub fn reference_markdown() -> String {
         } else {
             write_key_table(&validator, section, &mut out);
         }
+        if name == "devices" {
+            write_mapping_reference(&mut out);
+        }
     }
     out
+}
+
+/// Writes the `mapping` reference of every adapter kind of this build that feeds devices: the
+/// keys of the mapping table and of the tables below it.
+fn write_mapping_reference(out: &mut String) {
+    let kinds = crate::adapters::kinds_with_devices();
+    if kinds.is_empty() {
+        out.push_str("\nNo adapter of this build feeds devices, so `mapping` has no keys here.\n");
+        return;
+    }
+    for kind in kinds {
+        let Some(schema) = crate::adapters::mapping_schema(kind) else {
+            continue;
+        };
+        let validator = Validator::new(&schema);
+        let root = validator.resolve(&schema);
+        let _ = writeln!(out, "\n### `mapping` for adapter kind `\"{kind}\"`\n");
+        if let Some(description) = description(root) {
+            let _ = writeln!(out, "{description}\n");
+        }
+        write_key_table(&validator, root, out);
+        write_subtables(&validator, root, "mapping", out);
+    }
+}
+
+/// Writes a subsection for every key of `schema` whose value is a table with keys of its own:
+/// a plain table (`<prefix>.<key>`), a map of tables (`<prefix>.<key>.<name>`) or an array of
+/// tables (`<prefix>.<key>[]`).
+fn write_subtables(validator: &Validator<'_>, schema: &Value, prefix: &str, out: &mut String) {
+    let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
+        return;
+    };
+    for (key, property) in properties {
+        let resolved = validator.resolve(property);
+        let (title, inner) = if resolved.get("properties").is_some() {
+            (format!("{prefix}.{key}"), resolved)
+        } else if let Some(inner) = resolved
+            .get("additionalProperties")
+            .filter(|inner| inner.is_object())
+        {
+            (format!("{prefix}.{key}.<name>"), inner)
+        } else if resolved.get("type").and_then(Value::as_str) == Some("array")
+            && let Some(inner) = resolved.get("items")
+        {
+            (format!("{prefix}.{key}[]"), inner)
+        } else {
+            continue;
+        };
+        let inner = validator.resolve(inner);
+        if inner.get("properties").is_none() {
+            continue;
+        }
+        let _ = writeln!(out, "\n#### `{title}`\n");
+        if let Some(description) = description(inner) {
+            let _ = writeln!(out, "{description}\n");
+        }
+        write_key_table(validator, inner, out);
+    }
 }
 
 const INTRO: &str = "# Configuration reference
@@ -128,20 +191,20 @@ fn write_key_table(validator: &Validator<'_>, section: &Value, out: &mut String)
     }
 }
 
-/// Writes one subsection per variant of a tagged union (the adapter kinds).
+/// Writes one subsection per variant of a tagged union (the adapter kinds), or the key table of
+/// a plain table (the devices).
 fn write_variants(validator: &Validator<'_>, name: &str, schema: &Value, out: &mut String) {
     let schema = validator.resolve(schema);
-    let branches: Vec<&Value> = schema
-        .get("oneOf")
-        .and_then(Value::as_array)
-        .map(|branches| branches.iter().map(|b| validator.resolve(b)).collect())
-        .or_else(|| schema.get("properties").map(|_| vec![schema]))
-        .unwrap_or_default();
+    let Some(branches) = schema.get("oneOf").and_then(Value::as_array) else {
+        write_key_table(validator, schema, out);
+        return;
+    };
     if branches.is_empty() {
         out.push_str("No kind is available yet.\n");
         return;
     }
     for branch in branches {
+        let branch = validator.resolve(branch);
         let kind = branch["properties"]["kind"]["const"]
             .as_str()
             .unwrap_or("?");
@@ -150,6 +213,7 @@ fn write_variants(validator: &Validator<'_>, name: &str, schema: &Value, out: &m
             let _ = writeln!(out, "{description}\n");
         }
         write_key_table(validator, branch, out);
+        write_subtables(validator, branch, name, out);
         out.push('\n');
     }
 }
@@ -260,6 +324,8 @@ mod tests {
             "## `[log]`",
             "## `[bridge]`",
             "## `[adapters.<id>]`",
+            "## `[devices.<id>]`",
+            "| `adapter` | string, not empty | required |",
             "| `passcode` |",
             "| `discriminator` | integer, 0 to 4095 | required |",
             "| `port` | integer, 1 to 65535 | `5540` |",

@@ -13,11 +13,17 @@ use crate::model::ConfigFile;
 /// optional key is one that is not required.
 #[must_use]
 pub fn config_schema() -> Value {
+    schema_of::<ConfigFile>()
+}
+
+/// The JSON schema of any config type, with the same settings as the file's schema; used for
+/// the `mapping` tables whose shape depends on the adapter kind.
+pub(crate) fn schema_of<T: schemars::JsonSchema>() -> Value {
     let generator = SchemaSettings::draft2020_12()
         .for_deserialize()
         .with_transform(RecursiveTransform(remove_null))
         .into_generator();
-    generator.into_root_schema_for::<ConfigFile>().to_value()
+    generator.into_root_schema_for::<T>().to_value()
 }
 
 /// The JSON schema as pretty-printed text with a final newline, as committed to the repository.
@@ -77,6 +83,8 @@ mod tests {
             "NetworkSection",
             "StateSection",
             "LogSection",
+            "DeviceSection",
+            "PartSection",
         ] {
             assert_eq!(
                 schema["$defs"][section]["additionalProperties"], false,

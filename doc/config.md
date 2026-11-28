@@ -89,4 +89,80 @@ Adapter instances, one table `[adapters.<id>]` per instance. `kind` selects the 
 
 This section is optional.
 
-No kind is available yet.
+### `adapters` of kind `"mqtt"`
+
+An MQTT broker; see the MQTT contract in `doc/mqtt.md`.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `kind` | string | required |  |
+| `url` | string, not empty | required | Broker URL: `mqtt://host[:port]` (port 1883 when absent). `mqtts://` is reserved for a TLS build. The URL may carry `user:password@`, but the `username` and `password` keys are the recommended place for credentials and win over the URL. |
+| `username` | string, not empty | – | User name for the broker. |
+| `password` | string, or a table with `env`, or a table with `file` | – | Password for the broker. A secret: write it here, or read it with `{ env = "NAME" }` or `{ file = "PATH" }`. |
+| `client_id` | string, not empty | – | MQTT client id. Default `matter-rs-<id>` with the id of this adapter table. |
+| `name` | string, not empty | `"matter"` | The instance name of the bridge on this broker: the first topic level of its own items, `<name>/connected`, `<name>/info`, `<name>/status/...`. Must not contain `/`, `+` or `#`. |
+| `tls_ca` | string | – | CA certificate file (PEM) for `mqtts://` with a private CA. Reserved for a TLS build. |
+| `json_payloads` | boolean | `true` | Publish the bridge's status items as `{ "val": ..., "ts": ..., "lc": ... }` objects (the mqtt-smarthome default). `false` publishes plain values. |
+| `set_json` | boolean | `false` | Publish `set` messages for the devices as `{ "val": ... }` objects instead of plain values. |
+| `keep_alive` | integer, 0 to 65535 | `30` | Seconds between keep-alive pings when nothing else is sent; `0` switches them off. |
+| `reconnect` | a table | – | How the adapter reconnects after the broker connection was lost. |
+
+#### `adapters.reconnect`
+
+Reconnect delays after a lost broker connection: the delay starts at `initial`, doubles with every failed attempt and never exceeds `max`. A successful connection resets it.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `initial` | number | `1.0` | The delay before the first reconnect attempt, in seconds. |
+| `max` | number | `60.0` | The longest delay between two attempts, in seconds. |
+
+
+## `[devices.<id>]`
+
+Bridged devices, one table `[devices.<id>]` per device. The id is the device's stable key; every device names the adapter that feeds it and, in `mapping`, where the adapter finds it. Needs the bridge role.
+
+This section is optional.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `kind` | string, not empty | – | The device kind: `on-off-light`, `dimmable-light`, `color-temperature-light`, `extended-color-light`, `on-off-plug-in-unit`, `contact-sensor`, `temperature-sensor`, `humidity-sensor`, `pressure-sensor`, `light-sensor`, `occupancy-sensor` or `generic-switch`. A composed device lists its kinds in `parts` instead. |
+| `adapter` | string, not empty | required | The id of the `[adapters.<id>]` table that feeds the device. |
+| `name` | string, 1 to 32 characters | – | The label controllers show; the table's id when absent. |
+| `parts` | array | – | The parts of a composed device, in order, each a kind with an optional label (a power strip with two sockets and a sensor). Replaces `kind`. |
+| `mapping` | a table | required | Where the adapter finds the device. The keys depend on the adapter's kind and are listed per kind in the reference. |
+
+### `mapping` for adapter kind `"mqtt"`
+
+Where the device lives on the broker: its `source`, the two leading topic levels `<adapter>/<device>` of an mqtt-smarthome source, and the deviations from the convention.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `source` | string, at least 3 characters | required | The source adapter instance and the device's name on it, `<adapter>/<device>`: the device reads `<adapter>/status/<device>/<item>` and writes `<adapter>/set/<device>/<item>`, and is reachable while `<adapter>/connected` is `2`. |
+| `online` | string, not empty | – | The item that reports whether the device itself is reachable (`<adapter>/status/<device>/<online>`, a boolean); the device is unreachable while it is false. Not read when absent. |
+| `items` | a table | – | Deviations per attribute, by the attribute's name (`on-off`, `level`, `temperature`, ..., and `name` for the device label). For a composed device only `name` may appear here; its parts map their attributes in `parts`. |
+| `parts` | array | – | For a composed device: one entry per part, in the order of the device's `parts`. The default item of attribute `x` of part `i` is `<i>/<x>`, or `<prefix>/<x>`. |
+
+#### `mapping.items.<name>`
+
+How one attribute deviates from the convention: another item name or topic, a fixed value, or a transform (see the transforms table of the contract).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `item` | string, not empty | – | The item name under the convention, replacing the attribute's `snake_case` name. |
+| `status` | string, not empty | – | The full status topic, replacing `<adapter>/status/<device>/<item>`. |
+| `set` | string, not empty | – | The full `set` topic, replacing `<adapter>/set/<device>/<item>`. |
+| `value` | a value | – | A fixed value instead of a topic; the attribute is never read from or written to the broker. |
+| `scale` | array | – | The payload range `[min, max]`, mapped linearly onto the attribute's range. |
+| `invert` | boolean | `false` | Negate a boolean, or reverse the direction of `scale`. |
+| `map` | a table | – | Payload text to attribute value, for example `{ "ON" = true, "OFF" = false }`; matched case-insensitively, the key is published for a `set`. |
+| `path` | string | – | A JSON pointer into the payload (`/state/on`), instead of the `val` unwrapping. |
+| `factor` | number | – | Attribute value = payload × factor (`100` turns degrees into hundredths). |
+
+#### `mapping.parts[]`
+
+The mapping of one part of a composed device.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `prefix` | string, not empty | – | The item level of this part's attributes; the part's index when absent. |
+| `items` | a table | – | Deviations per attribute of this part, as in the device's `items`. |
