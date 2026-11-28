@@ -43,6 +43,30 @@ journald = false    # Linux only
 
 {{bridge}}
 # Adapters feed devices into the bridge. One table per adapter instance; `kind` selects the
-# adapter and the other keys depend on it, for example:
+# adapter and the other keys depend on it. Devices are `[devices.<id>]` tables that name their
+# adapter and say, in `mapping`, where the adapter finds them. The reference printed by
+# `matter-rs schema --markdown` lists every key; the MQTT topics are documented in doc/mqtt.md
+# of the repository.
+#
+# Example: an MQTT broker with a dimmable light and a temperature sensor published by an
+# mqtt-smarthome adapter named `hue`. It needs the bridge role.
+# To use it, remove the leading `# ` of every line below.
 # [adapters.home]
 # kind = "mqtt"
+# url = "mqtt://broker.local:1883"
+# # username = "matter"
+# # password = { env = "MATTER_RS_MQTT_PASSWORD" }
+# # name = "matter"   # the bridge's own topic prefix on this broker
+#
+# [devices.lamp]
+# kind = "dimmable-light"
+# adapter = "home"
+# name = "Living room lamp"
+# # reads hue/status/lamp/on_off and hue/status/lamp/level, writes hue/set/lamp/...
+# mapping = { source = "hue/lamp" }
+#
+# [devices.thermometer]
+# kind = "temperature-sensor"
+# adapter = "home"
+# # the source publishes degrees, the bridge serves hundredths of a degree
+# mapping = { source = "hue/thermometer", items = { temperature = { factor = 100 } } }

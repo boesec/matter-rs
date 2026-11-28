@@ -22,6 +22,10 @@ use crate::schema::config_schema;
 use crate::secret::SecretValue;
 use crate::validate::{KeyPath, Validator};
 
+mod adapters;
+#[cfg(feature = "role-bridge")]
+mod devices;
+
 /// A configuration file to load: its text and what is known about where it came from.
 #[derive(Debug, Clone, Copy)]
 pub struct ConfigSource<'a> {
@@ -54,6 +58,71 @@ pub struct Config {
     pub bridge: Option<BridgeSection>,
     /// Adapter instances by id.
     pub adapters: BTreeMap<String, AdapterConfig>,
+    /// Bridged devices by id, each with the mapping of its adapter's kind.
+    #[cfg(feature = "role-bridge")]
+    pub devices: BTreeMap<String, DeviceConfig>,
+}
+
+/// A bridged device, with its mapping typed by the kind of its adapter.
+#[cfg(feature = "role-bridge")]
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeviceConfig {
+    /// The id of the adapter instance that feeds the device.
+    pub adapter: String,
+    /// The label controllers show.
+    pub name: String,
+    /// The parts; one for a single device.
+    pub parts: Vec<PartConfig>,
+    /// Where the adapter finds the device.
+    pub mapping: DeviceMapping,
+}
+
+/// One part of a device.
+#[cfg(feature = "role-bridge")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartConfig {
+    /// The device kind.
+    pub kind: matter_rs_bridge::DeviceKind,
+    /// The label of the part, for composed devices.
+    pub label: Option<String>,
+}
+
+/// The `mapping` of a device, one variant per adapter kind that feeds devices.
+#[cfg(feature = "role-bridge")]
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum DeviceMapping {
+    /// A device on an MQTT adapter.
+    #[cfg(feature = "adapter-mqtt")]
+    Mqtt(matter_rs_adapter_mqtt::Mapping),
+}
+
+#[cfg(all(feature = "role-bridge", feature = "adapter-mqtt"))]
+impl Config {
+    /// The devices of the MQTT adapter instance `adapter`, as the adapter takes them.
+    #[must_use]
+    pub fn mqtt_devices(&self, adapter: &str) -> Vec<matter_rs_adapter_mqtt::DeviceDefinition> {
+        self.devices
+            .iter()
+            .filter(|(_, device)| device.adapter == adapter)
+            .filter_map(|(id, device)| {
+                let DeviceMapping::Mqtt(mapping) = &device.mapping;
+                Some(matter_rs_adapter_mqtt::DeviceDefinition {
+                    key: matter_rs_bridge::DeviceKey::new(id.as_str()).ok()?,
+                    name: device.name.clone(),
+                    parts: device
+                        .parts
+                        .iter()
+                        .map(|part| matter_rs_adapter_mqtt::PartDefinition {
+                            kind: part.kind,
+                            label: part.label.clone(),
+                        })
+                        .collect(),
+                    mapping: mapping.clone(),
+                })
+            })
+            .collect()
+    }
 }
 
 /// Identity and commissioning data of the node, with the passcode resolved.
@@ -95,7 +164,8 @@ pub struct Loaded {
     /// Warnings; contains no errors.
     pub report: Report,
     /// The sections present in the file, in file order of their names: `node`, `network`,
-    /// `state`, `log`, `bridge`, and `adapters.<id>` per adapter instance.
+    /// `state`, `log`, `bridge`, `adapters.<id>` per adapter instance and `devices.<id>` per
+    /// device.
     pub sections: Vec<String>,
 }
 
@@ -181,9 +251,19 @@ pub(crate) fn load_with_build(
             Resolved {
                 passcode: Some(passcode),
                 state: Some(state),
+                adapters: Some(adapters),
+                #[cfg(feature = "role-bridge")]
+                    devices: Some(devices),
             },
         ) if !report.has_errors() => Ok(Loaded {
-            config: build_config(file, passcode, state),
+            config: build_config(
+                file,
+                passcode,
+                state,
+                adapters,
+                #[cfg(feature = "role-bridge")]
+                devices,
+            ),
             report,
             sections: sections(&document),
         }),
@@ -215,10 +295,18 @@ fn check_structure(
 
     for (key, value) in document.get_ref() {
         match key.get_ref().as_ref() {
+            "devices" if !build.role_bridge => out.error(
+                &key.span(),
+                "the `[devices]` section needs the Cargo feature `role-bridge`, which is not \
+                 compiled into this build",
+            ),
+            #[cfg(feature = "role-bridge")]
+            "devices" => devices::check_devices(&validator, schema, document, value, out),
+            #[cfg(not(feature = "role-bridge"))]
             "devices" => out.error(
                 &key.span(),
-                "`devices` is reserved for device definitions, which this version does not \
-                 support yet",
+                "the `[devices]` section needs the Cargo feature `role-bridge`, which is not \
+                 compiled into this build",
             ),
             "bridge" if !build.role_bridge => out.error(
                 &key.span(),
@@ -342,11 +430,14 @@ fn is_valid_id(id: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
 }
 
-/// What the rules resolved: the passcode and the state directory, each `None` when it failed or
-/// could not be read.
+/// What the rules resolved: the passcode, the state directory, the adapters with their secrets
+/// and the typed devices, each `None` when it failed or could not be read.
 struct Resolved {
     passcode: Option<Secret<u32>>,
     state: Option<StateConfig>,
+    adapters: Option<BTreeMap<String, AdapterConfig>>,
+    #[cfg(feature = "role-bridge")]
+    devices: Option<BTreeMap<String, DeviceConfig>>,
 }
 
 /// The rules the schema cannot express, secret resolution and defaults.
@@ -383,6 +474,10 @@ fn check_rules(
     Resolved {
         passcode: check_passcode_rules(file, document, source, environment, out),
         state: resolve_state_dir(document, source, environment, out),
+        adapters: file
+            .and_then(|file| adapters::resolve_adapters(file, document, source, environment, out)),
+        #[cfg(feature = "role-bridge")]
+        devices: file.and_then(|file| devices::resolve_devices(file, document, out)),
     }
 }
 
@@ -484,7 +579,13 @@ fn resolve_state_dir(
 }
 
 /// The configuration from a valid file and the values the rules resolved.
-fn build_config(file: ConfigFile, passcode: Secret<u32>, state: StateConfig) -> Config {
+fn build_config(
+    file: ConfigFile,
+    passcode: Secret<u32>,
+    state: StateConfig,
+    adapters: BTreeMap<String, AdapterConfig>,
+    #[cfg(feature = "role-bridge")] devices: BTreeMap<String, DeviceConfig>,
+) -> Config {
     let node = file.node;
     Config {
         node: NodeConfig {
@@ -501,7 +602,9 @@ fn build_config(file: ConfigFile, passcode: Secret<u32>, state: StateConfig) -> 
         state,
         log: file.log,
         bridge: file.bridge,
-        adapters: file.adapters,
+        adapters,
+        #[cfg(feature = "role-bridge")]
+        devices,
     }
 }
 
@@ -557,11 +660,11 @@ fn sections(document: &Spanned<DeTable<'_>>) -> Vec<String> {
     for (key, value) in document.get_ref() {
         let key: &str = key.get_ref();
         match (key, value.get_ref()) {
-            ("adapters", DeValue::Table(instances)) => {
+            ("adapters" | "devices", DeValue::Table(instances)) => {
                 sections.extend(
                     instances
                         .iter()
-                        .map(|(id, _)| format!("adapters.{}", id.get_ref())),
+                        .map(|(id, _)| format!("{key}.{}", id.get_ref())),
                 );
             }
             _ => sections.push(key.to_owned()),

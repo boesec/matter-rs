@@ -267,7 +267,7 @@ fn unknown_kind_rejected() {
     assert_eq!(error.location, at(5, 8));
     assert_eq!(
         error.message,
-        "unknown adapter kind `zigbee` in `[adapters.home]`; known kinds are `test`, `absent`"
+        "unknown adapter kind `zigbee` in `[adapters.home]`; known kinds are `mqtt`, `test`, `absent`"
     );
 }
 
@@ -319,9 +319,317 @@ fn bridge_without_role_names_feature() {
 }
 
 #[test]
-fn devices_section_is_reserved() {
-    let error = single_error(&format!("{MINIMAL}[devices.lamp]\n"));
-    assert!(error.message.contains("reserved"), "{error}");
+fn devices_without_role_names_feature() {
+    let build = Build {
+        role_bridge: false,
+        ..build()
+    };
+    let errors = errors_with(
+        &format!("{MINIMAL}[devices.lamp]\nadapter = \"home\"\nmapping = {{}}\n"),
+        &environment(),
+        &build,
+    );
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert_eq!(errors[0].location, at(4, 2));
+    assert!(errors[0].message.contains("`role-bridge`"), "{}", errors[0]);
+}
+
+#[cfg(all(feature = "role-bridge", feature = "adapter-mqtt"))]
+mod mqtt {
+    //! The `mqtt` kind and the `[devices]` on it.
+
+    use matter_rs_adapter_mqtt::SecretText;
+    use matter_rs_bridge::DeviceKind;
+    use matter_rs_engine::Secret;
+
+    use super::{MINIMAL, at, environment, errors, errors_with, loaded, single_error, warnings};
+    use crate::adapters::AdapterConfig;
+    use crate::load::{Build, DeviceMapping};
+
+    /// The two-device configuration of the contract: a dimmable light and a temperature sensor.
+    const TWO_DEVICES: &str = "[bridge]
+
+[adapters.home]
+kind = \"mqtt\"
+url = \"mqtt://broker.local\"
+
+[devices.lamp]
+kind = \"dimmable-light\"
+adapter = \"home\"
+name = \"Lamp\"
+mapping = { source = \"hue/lamp\", items = { level = { scale = [0, 100] } } }
+
+[devices.thermometer]
+kind = \"temperature-sensor\"
+adapter = \"home\"
+[devices.thermometer.mapping]
+source = \"hue/thermometer\"
+items.temperature.factor = 100
+";
+
+    #[test]
+    fn mqtt_device_config_validates() {
+        let loaded = loaded(&format!("{MINIMAL}{TWO_DEVICES}"));
+        let config = &loaded.config;
+        let AdapterConfig::Mqtt(mqtt) = &config.adapters["home"] else {
+            panic!("not an MQTT adapter: {:?}", config.adapters["home"]);
+        };
+        assert_eq!(mqtt.url, "mqtt://broker.local");
+        assert_eq!(mqtt.name, "matter");
+        assert_eq!(config.devices.len(), 2);
+        let lamp = &config.devices["lamp"];
+        assert_eq!(lamp.adapter, "home");
+        assert_eq!(lamp.name, "Lamp");
+        assert_eq!(lamp.parts.len(), 1);
+        assert_eq!(lamp.parts[0].kind, DeviceKind::DimmableLight);
+        let DeviceMapping::Mqtt(mapping) = &lamp.mapping;
+        assert_eq!(mapping.source, "hue/lamp");
+        assert_eq!(mapping.items["level"].scale, Some([0.0, 100.0]));
+        let thermometer = &config.devices["thermometer"];
+        assert_eq!(thermometer.name, "thermometer");
+        let DeviceMapping::Mqtt(mapping) = &thermometer.mapping;
+        assert_eq!(mapping.items["temperature"].factor, Some(100.0));
+
+        let definitions = config.mqtt_devices("home");
+        assert_eq!(definitions.len(), 2);
+        assert_eq!(definitions[0].key.as_str(), "lamp");
+        assert_eq!(definitions[1].parts[0].kind, DeviceKind::TemperatureSensor);
+        assert!(config.mqtt_devices("other").is_empty());
+        assert_eq!(
+            loaded.sections,
+            [
+                "adapters.home",
+                "bridge",
+                "devices.lamp",
+                "devices.thermometer",
+                "node"
+            ]
+        );
+        assert!(warnings(&loaded).is_empty());
+    }
+
+    #[test]
+    fn missing_required_mapping_is_an_error_with_location() {
+        // A colour temperature light needs the physical bounds, which have no default item.
+        let text = format!(
+            "{MINIMAL}[bridge]\n[adapters.home]\nkind = \"mqtt\"\nurl = \"mqtt://b\"\n\n\
+             [devices.spot]\nkind = \"color-temperature-light\"\nadapter = \"home\"\n\
+             [devices.spot.mapping]\nsource = \"hue/spot\"\n"
+        );
+        let errors = errors(&text);
+        assert_eq!(errors.len(), 2, "{errors:#?}");
+        for (error, attribute) in errors.iter().zip(["max", "min"]) {
+            // Both errors sit at the mapping table and are sorted by their text.
+            assert_eq!(error.location, at(12, 1), "{error}");
+            assert!(error.message.contains("`mapping.items`"), "{error}");
+            assert!(
+                error
+                    .message
+                    .contains(&format!("`color-temperature-{attribute}`")),
+                "{error}"
+            );
+            assert!(error.message.contains("fixed"), "{error}");
+        }
+
+        // With the bounds as fixed values the device loads.
+        let fixed = format!(
+            "{text}items.color-temperature-min.value = 153\nitems.color-temperature-max.value = 500\n"
+        );
+        assert_eq!(loaded(&fixed).config.devices.len(), 1);
+    }
+
+    #[test]
+    fn transform_errors_point_at_their_key() {
+        let text = format!(
+            "{MINIMAL}[bridge]\n[adapters.home]\nkind = \"mqtt\"\nurl = \"mqtt://b\"\n\n\
+             [devices.lamp]\nkind = \"on-off-light\"\nadapter = \"home\"\n\
+             [devices.lamp.mapping]\nsource = \"hue/lamp\"\n\
+             [devices.lamp.mapping.items.on-off]\nscale = [0, 1]\n"
+        );
+        let error = single_error(&text);
+        assert_eq!(error.location, at(15, 9), "{error}");
+        assert!(error.message.contains("`scale`"), "{error}");
+        assert!(error.message.contains("numeric"), "{error}");
+    }
+
+    #[test]
+    fn mapping_keys_are_checked_against_the_schema() {
+        let text = format!(
+            "{MINIMAL}[bridge]\n[adapters.home]\nkind = \"mqtt\"\nurl = \"mqtt://b\"\n\n\
+             [devices.lamp]\nkind = \"on-off-light\"\nadapter = \"home\"\n\
+             mapping = {{ topic = \"x\" }}\n"
+        );
+        let messages: Vec<String> = errors(&text).iter().map(ToString::to_string).collect();
+        assert_eq!(
+            messages,
+            [
+                "config.toml:12:11: error: missing required key `source` in \
+                 `[devices.lamp.mapping]`",
+                "config.toml:12:13: error: unknown key `topic` in `[devices.lamp.mapping]`; \
+                 expected one of `source`, `online`, `items`, `parts`",
+            ]
+        );
+    }
+
+    #[test]
+    fn devices_need_a_kind_an_adapter_and_a_table() {
+        let text = format!(
+            "{MINIMAL}[bridge]\n[adapters.home]\nkind = \"mqtt\"\nurl = \"mqtt://b\"\n\n\
+             [devices.a]\nadapter = \"home\"\nmapping = {{ source = \"x/a\" }}\n\n\
+             [devices.b]\nkind = \"toaster\"\nadapter = \"nope\"\nmapping = {{ source = \"x/b\" }}\n\n\
+             [devices.c]\nkind = \"on-off-light\"\nparts = [{{ kind = \"on-off-light\" }}]\n\
+             adapter = \"home\"\nmapping = {{ source = \"x/c\" }}\n\n\
+             [devices.\"D d\"]\nkind = \"on-off-light\"\nadapter = \"home\"\nmapping = {{ source = \"x/d\" }}\n"
+        );
+        let messages: Vec<String> = errors(&text).iter().map(ToString::to_string).collect();
+        assert_eq!(
+            messages,
+            [
+                "config.toml:9:1: error: missing `kind` (or `parts` for a composed device) in \
+                 `[devices.a]`",
+                "config.toml:14:8: error: `devices.b.kind` is not a device kind; known kinds are \
+                 `on-off-light`, `dimmable-light`, `color-temperature-light`, \
+                 `extended-color-light`, `on-off-plug-in-unit`, `contact-sensor`, \
+                 `temperature-sensor`, `humidity-sensor`, `pressure-sensor`, `light-sensor`, \
+                 `occupancy-sensor`, `generic-switch`",
+                "config.toml:15:11: error: `devices.b.adapter` names no `[adapters.<id>]` table; \
+                 known adapters are `home`",
+                "config.toml:20:1: error: `kind` and `parts` exclude each other in \
+                 `[devices.c]`; a composed device lists its kinds in `parts` only",
+                "config.toml:24:10: error: device id `D d` is not valid; use lower-case letters, \
+                 digits, `-` and `_`, starting with a letter or digit",
+            ]
+        );
+    }
+
+    #[test]
+    fn composed_devices_load_with_their_parts() {
+        let text = format!(
+            "{MINIMAL}[bridge]\n[adapters.home]\nkind = \"mqtt\"\nurl = \"mqtt://b\"\n\n\
+             [devices.strip]\nadapter = \"home\"\n\
+             parts = [{{ kind = \"on-off-plug-in-unit\", label = \"Left\" }}, \
+             {{ kind = \"on-off-plug-in-unit\", label = \"Right\" }}]\n\
+             mapping = {{ source = \"x/strip\", parts = [{{ prefix = \"left\" }}, {{ prefix = \"right\" }}] }}\n"
+        );
+        let loaded = loaded(&text);
+        let strip = &loaded.config.devices["strip"];
+        assert_eq!(strip.parts.len(), 2);
+        assert_eq!(strip.parts[1].label.as_deref(), Some("Right"));
+        assert_eq!(loaded.config.mqtt_devices("home")[0].parts.len(), 2);
+    }
+
+    #[test]
+    fn mqtt_adapter_rules_have_locations() {
+        let text = format!(
+            "{MINIMAL}[adapters.home]\nkind = \"mqtt\"\nurl = \"mqtts://broker\"\nname = \"a/b\"\n\
+             reconnect = {{ initial = 9, max = 1 }}\n"
+        );
+        let errors = errors(&text);
+        let messages: Vec<String> = errors.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            messages,
+            [
+                "config.toml:6:7: error: `adapters.home.url`: `mqtts://` needs TLS, which this \
+                 build does not include; use `mqtt://`",
+                "config.toml:7:8: error: `adapters.home.name`: the instance name must not contain \
+                 `/`, `+` or `#`",
+                "config.toml:8:13: error: `adapters.home.reconnect`: `initial` must not exceed \
+                 `max`",
+            ]
+        );
+    }
+
+    #[test]
+    fn mqtt_password_is_resolved_and_never_echoed() {
+        let text = format!(
+            "{MINIMAL}[adapters.home]\nkind = \"mqtt\"\nurl = \"mqtt://b\"\n\
+             password = {{ env = \"MQTT_PW\" }}\n\n\
+             [adapters.away]\nkind = \"mqtt\"\nurl = \"mqtt://b\"\npassword = {{ file = \"pw.txt\" }}\n"
+        );
+        let environment = environment()
+            .with_var("MQTT_PW", "from-env")
+            .with_file("pw.txt", " from-file\n");
+        let loaded = super::load_with_build(&super::source(&text), &environment, &super::build())
+            .unwrap_or_else(|error| panic!("{error}"));
+        let password = |id: &str| match &loaded.config.adapters[id] {
+            AdapterConfig::Mqtt(config) => config.password.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            password("home"),
+            Some(SecretText::Plain(Secret::new("from-env".into())))
+        );
+        assert_eq!(
+            password("away"),
+            Some(SecretText::Plain(Secret::new("from-file".into())))
+        );
+        let debug = format!("{:?}", loaded.config);
+        assert!(
+            !debug.contains("from-env") && !debug.contains("from-file"),
+            "{debug}"
+        );
+
+        let errors = errors_with(&text, &super::environment(), &super::build());
+        let messages: Vec<String> = errors.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            messages,
+            [
+                "config.toml:7:12: error: `adapters.home.password`: the environment variable \
+                 `MQTT_PW` is not set",
+                "config.toml:12:12: error: `adapters.away.password`: the secret file `pw.txt` \
+                 cannot be read: file not found",
+            ]
+        );
+    }
+
+    #[test]
+    fn plain_mqtt_password_in_a_readable_file_warns() {
+        let text = format!(
+            "{MINIMAL}[adapters.home]\nkind = \"mqtt\"\nurl = \"mqtt://b\"\npassword = \"hunter2\"\n"
+        );
+        let source = super::ConfigSource {
+            mode: Some(0o644),
+            ..super::source(&text)
+        };
+        let loaded = super::load_with_build(&source, &super::environment(), &super::build())
+            .unwrap_or_else(|error| panic!("{error}"));
+        let warnings = warnings(&loaded);
+        assert_eq!(warnings.len(), 2, "{warnings:#?}");
+        assert!(
+            warnings[1].contains("`adapters.home.password`"),
+            "{}",
+            warnings[1]
+        );
+        assert!(!warnings[1].contains("hunter2"), "{}", warnings[1]);
+    }
+
+    #[test]
+    fn test_adapter_feeds_no_devices() {
+        let text = format!(
+            "{MINIMAL}[bridge]\n[adapters.t]\nkind = \"test\"\ntopic = \"x\"\n\n\
+             [devices.lamp]\nkind = \"on-off-light\"\nadapter = \"t\"\nmapping = {{}}\n"
+        );
+        let error = single_error(&text);
+        assert!(error.message.contains("feeds no devices"), "{error}");
+        assert_eq!(error.location, at(12, 11));
+    }
+
+    #[test]
+    fn devices_are_rejected_when_the_role_is_not_built() {
+        let build = Build {
+            role_bridge: false,
+            ..super::build()
+        };
+        let errors = errors_with(
+            &format!("{MINIMAL}{TWO_DEVICES}"),
+            &super::environment(),
+            &build,
+        );
+        assert!(
+            errors.iter().any(|e| e.message.contains("`role-bridge`")),
+            "{errors:#?}"
+        );
+    }
 }
 
 #[test]

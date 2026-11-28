@@ -38,6 +38,51 @@ pub struct ConfigFile {
     /// `adapter-<kind>`.
     #[serde(default)]
     pub adapters: BTreeMap<String, AdapterConfig>,
+    /// Bridged devices, one table `[devices.<id>]` per device. The id is the device's stable
+    /// key; every device names the adapter that feeds it and, in `mapping`, where the adapter
+    /// finds it. Needs the bridge role.
+    #[serde(default)]
+    pub devices: BTreeMap<String, DeviceSection>,
+}
+
+/// A bridged device fed by an adapter.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceSection {
+    /// The device kind: `on-off-light`, `dimmable-light`, `color-temperature-light`,
+    /// `extended-color-light`, `on-off-plug-in-unit`, `contact-sensor`, `temperature-sensor`,
+    /// `humidity-sensor`, `pressure-sensor`, `light-sensor`, `occupancy-sensor` or
+    /// `generic-switch`. A composed device lists its kinds in `parts` instead.
+    #[serde(default)]
+    #[schemars(length(min = 1))]
+    pub kind: Option<String>,
+    /// The id of the `[adapters.<id>]` table that feeds the device.
+    #[schemars(length(min = 1))]
+    pub adapter: String,
+    /// The label controllers show; the table's id when absent.
+    #[serde(default)]
+    #[schemars(length(min = 1, max = 32))]
+    pub name: Option<String>,
+    /// The parts of a composed device, in order, each a kind with an optional label (a power
+    /// strip with two sockets and a sensor). Replaces `kind`.
+    #[serde(default)]
+    pub parts: Vec<PartSection>,
+    /// Where the adapter finds the device. The keys depend on the adapter's kind and are
+    /// listed per kind in the reference.
+    pub mapping: serde_json::Map<String, serde_json::Value>,
+}
+
+/// One part of a composed device.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PartSection {
+    /// The device kind of the part, as for `kind` of the device.
+    #[schemars(length(min = 1))]
+    pub kind: String,
+    /// The label of the part, shown as a semantic tag when several parts share a kind.
+    #[serde(default)]
+    #[schemars(length(min = 1, max = 32))]
+    pub label: Option<String>,
 }
 
 /// Identity and commissioning data of the Matter node.

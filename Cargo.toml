@@ -1,9 +1,9 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
-# The fuzz crate of the config parser is built by `cargo fuzz` on its own (nightly, Linux) and is
-# not part of the normal build.
-exclude = ["crates/config/fuzz"]
+# The fuzz crates of the config parser and of the MQTT adapter are built by `cargo fuzz` on their
+# own (nightly, Linux) and are not part of the normal build.
+exclude = ["crates/config/fuzz", "crates/adapter-mqtt/fuzz"]
 
 [workspace.package]
 version = "0.0.0"
@@ -32,8 +32,14 @@ getrandom = "0.4"
 schemars = { version = "1.2", features = ["preserve_order"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-# Property-based tests of the engine facade (dev-dependency only).
+# Property-based tests of the engine facade and of the MQTT transforms (dev-dependency only).
 proptest = "1.6"
+# The MQTT client of the MQTT adapter, on tokio, without rumqttc's TLS features: they pin
+# `rustls-webpki` 0.102 and `rustls-pemfile`, both under open advisories, so `mqtts://` waits for
+# a TLS layer whose dependencies pass the advisory check. `rumqttd` is the same project's broker,
+# used in process by the adapter's integration tests only (no TLS, no websockets needed there).
+rumqttc = { version = "0.25.1", default-features = false }
+rumqttd = { version = "0.20.0", default-features = false }
 # The `no_std` lock of the bridge role: a critical-section mutex the embedded target implements;
 # the std build enables its `std` implementation. Already in the dependency graph through
 # rs-matter.

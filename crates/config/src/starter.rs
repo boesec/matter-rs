@@ -50,6 +50,74 @@ pub fn new_starter_config() -> Result<String, Error> {
 mod tests {
     use super::{TEMPLATE, starter_config};
 
+    /// The marker line after which the commented example follows.
+    const EXAMPLE_MARKER: &str = "remove the leading `# `";
+
+    #[test]
+    fn starter_config_validates() {
+        let text = starter_config(13_572_468, 3_840);
+        let source = crate::ConfigSource {
+            name: "starter.toml",
+            text: &text,
+            directory: None,
+            mode: None,
+        };
+        let environment =
+            crate::environment::fake::FakeEnvironment::default().with_var("HOME", "/home/someone");
+        let loaded = crate::load_source(&source, &environment)
+            .unwrap_or_else(|error| panic!("the starter file does not load: {error}"));
+        assert!(loaded.config.adapters.is_empty());
+    }
+
+    #[test]
+    #[cfg(all(feature = "role-bridge", feature = "adapter-mqtt"))]
+    fn starter_config_mqtt_example_validates() {
+        let text = starter_config(13_572_468, 3_840);
+        let marker = text
+            .lines()
+            .position(|line| line.contains(EXAMPLE_MARKER))
+            .expect("the example marker exists");
+        let uncommented: Vec<String> = text
+            .lines()
+            .enumerate()
+            .map(|(index, line)| {
+                if index > marker {
+                    line.strip_prefix("# ")
+                        .or_else(|| line.strip_prefix('#'))
+                        .unwrap_or(line)
+                        .to_owned()
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect();
+        let text = uncommented.join("\n");
+        let source = crate::ConfigSource {
+            name: "starter.toml",
+            text: &text,
+            directory: None,
+            mode: None,
+        };
+        let environment =
+            crate::environment::fake::FakeEnvironment::default().with_var("HOME", "/home/someone");
+        let loaded = match crate::load_source(&source, &environment) {
+            Ok(loaded) => loaded,
+            Err(crate::Error::Invalid(report)) => panic!(
+                "the example does not load:
+{report}"
+            ),
+            Err(error) => panic!("{error}"),
+        };
+        assert_eq!(loaded.config.adapters["home"].kind(), "mqtt");
+        assert_eq!(loaded.config.devices.len(), 2);
+        assert_eq!(loaded.config.mqtt_devices("home").len(), 2);
+        assert!(
+            loaded.report.warnings().next().is_none(),
+            "{}",
+            loaded.report
+        );
+    }
+
     #[test]
     fn every_placeholder_is_filled() {
         assert!(TEMPLATE.contains("{{passcode}}"));

@@ -1,0 +1,29 @@
+[package]
+name = "matter-rs-adapter-mqtt-fuzz"
+description = "Fuzz targets of the MQTT adapter's parsers (payloads, mappings, broker URLs), run with cargo-fuzz."
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+matter-rs-adapter-mqtt = { path = "..", features = ["role-bridge"] }
+matter-rs-bridge = { path = "../../bridge" }
+serde_json = "1.0"
+toml = "1.1"
+
+# A workspace of its own: the fuzz crate needs a nightly toolchain and libFuzzer, so it stays
+# out of the main workspace (which also lists it under `exclude`).
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "mqtt_payload"
+path = "fuzz_targets/mqtt_payload.rs"
+test = false
+doc = false
+bench = false

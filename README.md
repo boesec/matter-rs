@@ -107,9 +107,21 @@ generated from the code, and a test fails when they are out of date.
 ## Running as a service
 
 `matter-rs run` starts the node from the configuration file: the Matter engine (rs-matter, on a
-thread of its own) with the bridge role on it, until it is stopped. The bridge does not have
-adapters yet, so it serves its aggregator without bridged devices; configured adapter instances
-are reported in the log and not started.
+thread of its own) with the bridge role on it and the configured adapters under the adapter
+supervisor, until it is stopped. Without adapters the bridge serves its aggregator without
+bridged devices.
+
+**MQTT.** The MQTT adapter (`[adapters.<id>] kind = "mqtt"`) reads devices of other
+[mqtt-smarthome](https://github.com/mqtt-smarthome/mqtt-smarthome) adapters, and of any MQTT
+source with configurable topics, as bridged devices: a `[devices.<id>]` table names its kind, its
+adapter and, in `mapping`, the source (`hue/lamp` for `hue/status/lamp/...`); deviations from the
+convention and a fixed set of transforms (`scale`, `factor`, `map`, `path`, `invert`) cover other
+topic layouts and units. Matter commands leave as `set` messages and are never echoed as status,
+reachability follows the source's `connected` item, and the bridge itself appears on the broker as
+an mqtt-smarthome 2.0 instance (`matter/connected`, `matter/info`, its commissioning state and
+every device's reachability; never a pairing code). The contract, with every deviation from the
+specification and its reason, is [`doc/mqtt.md`](doc/mqtt.md); the starter file carries a
+commented example.
 
 ```sh
 matter-rs init --output config.toml

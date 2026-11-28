@@ -10,6 +10,8 @@
 //!   them.
 //! - [`load`] reads a file, checks it and returns a [`Config`] with secrets and defaults
 //!   resolved, or a [`Report`] with every error and warning, each with file, line and column.
+//!   The `[devices.<id>]` tables are checked against the mapping rules of their adapter's kind
+//!   and come back typed (with the bridge role).
 //! - [`SecretValue`] is the form of a secret in the file; loading turns it into the engine's
 //!   [`Secret`](matter_rs_engine::Secret).
 //! - [`new_starter_config`] produces the commented starter file with a fresh passcode and
@@ -41,10 +43,12 @@ pub use diagnostic::{Diagnostic, Location, Report, Severity};
 pub use environment::{Environment, Platform, SystemEnvironment};
 pub use error::Error;
 pub use load::{Config, ConfigSource, Loaded, NodeConfig, StateConfig, load_source};
+#[cfg(feature = "role-bridge")]
+pub use load::{DeviceConfig, DeviceMapping, PartConfig};
 pub use markdown::reference_markdown;
 pub use model::{
-    BridgeSection, ConfigFile, DEFAULT_PORT, DEFAULT_PRODUCT_ID, DEFAULT_VENDOR_ID, LogFormat,
-    LogLevel, LogSection, NetworkSection, NodeSection, StateSection,
+    BridgeSection, ConfigFile, DEFAULT_PORT, DEFAULT_PRODUCT_ID, DEFAULT_VENDOR_ID, DeviceSection,
+    LogFormat, LogLevel, LogSection, NetworkSection, NodeSection, PartSection, StateSection,
 };
 pub use passcode::{
     DISCRIMINATOR_MAX, PASSCODE_MAX, PasscodeError, TEST_PASSCODE, check_passcode,
