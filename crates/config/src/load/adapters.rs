@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use toml::Spanned;
 use toml::de::DeTable;
 
+#[cfg(feature = "adapter-mqtt")]
 use super::span_at;
 use crate::adapters::AdapterConfig;
 use crate::diagnostic::Collector;
@@ -13,6 +14,10 @@ use crate::load::ConfigSource;
 
 /// Checks every adapter of a valid file against the rules of its kind and resolves its secrets.
 /// `None` when something failed; everything is reported.
+///
+/// Only the MQTT adapter has rules and secrets of its own so far; a build without it keeps the
+/// adapters as they were parsed.
+#[cfg_attr(not(feature = "adapter-mqtt"), allow(unused_variables))]
 pub(super) fn resolve_adapters(
     file: &crate::model::ConfigFile,
     document: &Spanned<DeTable<'_>>,
@@ -20,29 +25,32 @@ pub(super) fn resolve_adapters(
     environment: &dyn Environment,
     out: &mut Collector<'_>,
 ) -> Option<BTreeMap<String, AdapterConfig>> {
-    let mut adapters = BTreeMap::new();
-    let mut complete = true;
-    for (id, adapter) in &file.adapters {
-        let resolved = match adapter {
-            #[cfg(feature = "adapter-mqtt")]
-            AdapterConfig::Mqtt(config) => {
-                resolve_mqtt(id, config, document, source, environment, out)
-                    .map(AdapterConfig::Mqtt)
-            }
-            #[allow(unreachable_patterns)]
-            other => {
-                let _ = (document, source, environment);
-                Some(other.clone())
-            }
-        };
-        match resolved {
-            Some(resolved) => {
-                adapters.insert(id.clone(), resolved);
-            }
-            None => complete = false,
-        }
+    #[cfg(not(feature = "adapter-mqtt"))]
+    {
+        Some(file.adapters.clone())
     }
-    complete.then_some(adapters)
+    #[cfg(feature = "adapter-mqtt")]
+    {
+        let mut adapters = BTreeMap::new();
+        let mut complete = true;
+        for (id, adapter) in &file.adapters {
+            let resolved = match adapter {
+                AdapterConfig::Mqtt(config) => {
+                    resolve_mqtt(id, config, document, source, environment, out)
+                        .map(AdapterConfig::Mqtt)
+                }
+                #[allow(unreachable_patterns)]
+                other => Some(other.clone()),
+            };
+            match resolved {
+                Some(resolved) => {
+                    adapters.insert(id.clone(), resolved);
+                }
+                None => complete = false,
+            }
+        }
+        complete.then_some(adapters)
+    }
 }
 
 /// The MQTT adapter's own checks, each at its key, and the password resolved into its plain
