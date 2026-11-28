@@ -1,0 +1,4 @@
+# `cargo xtask <task>` runs the development tasks of the workspace (crates/xtask), for example
+# `cargo xtask footprint`.
+[alias]
+xtask = "run --package matter-rs-xtask --"

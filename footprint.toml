@@ -1,0 +1,74 @@
+# Footprint budgets of the matter-rs build profiles. All values are bytes.
+#
+# `cargo xtask footprint` builds every profile with the Cargo profile `release-small` (stripped,
+# fat LTO, one codegen unit), measures it on Linux and compares the numbers with the budgets
+# below; a measurement above its budget fails the run and the footprint workflow. A budget key
+# that is commented out means "measure only" (TOML has no null).
+#
+# `cargo xtask footprint --bless` writes the measured values plus a margin (15 % by default)
+# into this file. It rewrites the whole file in this layout, so edit the values only. It refuses
+# to run in CI, where the budgets are checked, never changed.
+
+host_target = "x86_64-unknown-linux-gnu"
+cross_targets = ["aarch64-unknown-linux-musl", "armv7-unknown-linux-musleabihf"]
+
+[[profile]]
+name = "minimal-bridge"
+description = "Bridge role only: no MQTT adapter, no journald (--no-default-features --features role-bridge)"
+default_features = false
+features = ["role-bridge"]
+
+# The stripped binary, and the resident set size of `matter-rs run` with the starter
+# configuration and no devices, a few seconds after the node is running. Cross targets: the
+# stripped binary only.
+[profile.budget.x86_64-unknown-linux-gnu]
+# max_binary_bytes = (measure only)
+# max_rss_bytes = (measure only)
+
+[profile.budget.aarch64-unknown-linux-musl]
+# max_binary_bytes = (measure only)
+
+[profile.budget.armv7-unknown-linux-musleabihf]
+# max_binary_bytes = (measure only)
+
+[[profile]]
+name = "full-bridge"
+description = "The default features: bridge role, MQTT adapter, journald"
+default_features = true
+features = []
+
+# The stripped binary, and the resident set size of `matter-rs run` with the starter
+# configuration and no devices, a few seconds after the node is running. Cross targets: the
+# stripped binary only.
+[profile.budget.x86_64-unknown-linux-gnu]
+# max_binary_bytes = (measure only)
+# max_rss_bytes = (measure only)
+
+[profile.budget.aarch64-unknown-linux-musl]
+# max_binary_bytes = (measure only)
+
+[profile.budget.armv7-unknown-linux-musleabihf]
+# max_binary_bytes = (measure only)
+
+[[profile]]
+name = "controller"
+description = "The controller role; measured once the role exists"
+planned = true
+
+# The engine example with bridged devices, the stand-in for a bridge with devices until the
+# service has an adapter that feeds it devices. It is built with `release-small`, started with
+# `--heap-stats`, gets its devices through its line protocol on standard input, and is measured
+# once the last device is served: the resident set size from /proc, then the heap peak it prints
+# on `quit`.
+[example]
+package = "matter-rs-engine-rsmatter"
+name = "onoff_node"
+devices = 20
+first_endpoint = 2
+device_kind = "dimmable-light"
+
+# Budgets on the host target.
+[example.budget]
+# max_binary_bytes = (measure only)
+# max_rss_bytes = (measure only)
+# max_heap_peak_bytes = (measure only)
