@@ -70,6 +70,10 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["std", "fmt", "ansi", "env-filter", "json", "tracing-log", "registry"] }
 tracing-log = { version = "0.2", default-features = false, features = ["log-tracer", "std"] }
 tracing-journald = "0.3.2"
+# The counting global allocator of the engine example (`--heap-stats`): it wraps `System` and
+# keeps the current and the peak heap size. A dependency because implementing `GlobalAlloc` is
+# unsafe and the workspace forbids unsafe code in every target, examples included.
+cap = { version = "0.1.2", features = ["stats"] }
 
 # The size-optimised release build of the footprint measurement (`cargo xtask footprint`).
 # `panic` stays `unwind`, as in `release`, because the adapter supervisor catches the panics of
