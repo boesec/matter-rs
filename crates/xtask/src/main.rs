@@ -111,7 +111,8 @@ enum Outcome {
 
 /// The workspace root: this crate lives in `crates/xtask`.
 fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    root.canonicalize().unwrap_or(root)
 }
 
 /// `--bless` is a person's decision: it refuses to run when `CI` is set to anything.
