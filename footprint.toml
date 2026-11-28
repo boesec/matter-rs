@@ -22,14 +22,14 @@ features = ["role-bridge"]
 # configuration and no devices, a few seconds after the node is running. Cross targets: the
 # stripped binary only.
 [profile.budget.x86_64-unknown-linux-gnu]
-# max_binary_bytes = (measure only)
-# max_rss_bytes = (measure only)
+max_binary_bytes = 5_453_824
+max_rss_bytes = 7_273_472
 
 [profile.budget.aarch64-unknown-linux-musl]
-# max_binary_bytes = (measure only)
+max_binary_bytes = 4_579_328
 
 [profile.budget.armv7-unknown-linux-musleabihf]
-# max_binary_bytes = (measure only)
+max_binary_bytes = 4_699_136
 
 [[profile]]
 name = "full-bridge"
@@ -41,14 +41,14 @@ features = []
 # configuration and no devices, a few seconds after the node is running. Cross targets: the
 # stripped binary only.
 [profile.budget.x86_64-unknown-linux-gnu]
-# max_binary_bytes = (measure only)
-# max_rss_bytes = (measure only)
+max_binary_bytes = 5_480_448
+max_rss_bytes = 7_188_480
 
 [profile.budget.aarch64-unknown-linux-musl]
-# max_binary_bytes = (measure only)
+max_binary_bytes = 4_604_928
 
 [profile.budget.armv7-unknown-linux-musleabihf]
-# max_binary_bytes = (measure only)
+max_binary_bytes = 4_724_736
 
 [[profile]]
 name = "controller"
@@ -69,6 +69,6 @@ device_kind = "dimmable-light"
 
 # Budgets on the host target.
 [example.budget]
-# max_binary_bytes = (measure only)
-# max_rss_bytes = (measure only)
-# max_heap_peak_bytes = (measure only)
+max_binary_bytes = 4_421_632
+max_rss_bytes = 5_487_616
+max_heap_peak_bytes = 161_792
