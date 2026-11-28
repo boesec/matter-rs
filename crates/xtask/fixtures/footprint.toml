@@ -1,0 +1,52 @@
+# A budget file for the tests: budgets on nearly every measurement.
+
+host_target = "x86_64-unknown-linux-gnu"
+cross_targets = ["aarch64-unknown-linux-musl", "armv7-unknown-linux-musleabihf"]
+
+[[profile]]
+name = "minimal-bridge"
+description = "Bridge role only"
+default_features = false
+features = ["role-bridge"]
+
+[profile.budget.x86_64-unknown-linux-gnu]
+max_binary_bytes = 4_000_000
+max_rss_bytes = 12_000_000
+
+[profile.budget.aarch64-unknown-linux-musl]
+max_binary_bytes = 4_000_000
+
+[profile.budget.armv7-unknown-linux-musleabihf]
+max_binary_bytes = 3_500_000
+
+[[profile]]
+name = "full-bridge"
+description = "Default features"
+default_features = true
+features = []
+
+[profile.budget.x86_64-unknown-linux-gnu]
+max_binary_bytes = 5_000_000
+max_rss_bytes = 13_000_000
+
+[profile.budget.aarch64-unknown-linux-musl]
+max_binary_bytes = 5_000_000
+
+[profile.budget.armv7-unknown-linux-musleabihf]
+max_binary_bytes = 4_500_000
+
+[[profile]]
+name = "controller"
+description = "Controller role, planned"
+planned = true
+
+[example]
+package = "matter-rs-engine-rsmatter"
+name = "onoff_node"
+devices = 20
+first_endpoint = 2
+device_kind = "dimmable-light"
+
+[example.budget]
+max_rss_bytes = 16_000_000
+max_heap_peak_bytes = 2_000_000

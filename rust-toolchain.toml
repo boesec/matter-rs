@@ -4,4 +4,7 @@ components = ["rustfmt", "clippy"]
 profile = "minimal"
 # The `no_std` tier (engine facade, adapter contract, bridge role) is checked against a bare-metal
 # Cortex-M target so that no std dependency slips in. `cargo check` needs no linker for it.
-targets = ["thumbv7em-none-eabihf"]
+#
+# The two musl targets are the small Linux boards the service binary is cross-built for with
+# `cargo zigbuild` (`cargo xtask footprint --cross`, the footprint workflow).
+targets = ["thumbv7em-none-eabihf", "aarch64-unknown-linux-musl", "armv7-unknown-linux-musleabihf"]

@@ -1,0 +1,24 @@
+[package]
+name = "matter-rs-xtask"
+description = "Development tasks of the matter-rs workspace, run as `cargo xtask <task>`: the footprint measurement against the budgets in footprint.toml."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+# Tooling only: it builds and runs the workspace's binaries as processes and depends on no
+# workspace crate (see ARCHITECTURE.md).
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+
+[lints]
+workspace = true

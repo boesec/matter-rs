@@ -23,9 +23,12 @@ const WORKSPACE_PREFIX: &str = "matter-rs";
 /// Direct dependencies allowed between workspace crates: for every crate, the workspace crates it
 /// may name in `[dependencies]`, `[dev-dependencies]` or `[build-dependencies]`. Crates that do
 /// not exist yet are listed so that the rule is in place when they come. The engine
-/// implementation is reserved for the binary: only the service wires an engine in.
+/// implementation is reserved for the binary: only the service wires an engine in. The
+/// development tasks (`xtask`) build and run the binaries as processes and depend on no
+/// workspace crate.
 const RULES: &[(&str, &[&str])] = &[
     ("matter-rs-engine", &[]),
+    ("matter-rs-xtask", &[]),
     (ENGINE_RSMATTER, &["matter-rs-engine"]),
     ("matter-rs-bridge", &["matter-rs-engine"]),
     ("matter-rs-controller", &["matter-rs-engine"]),

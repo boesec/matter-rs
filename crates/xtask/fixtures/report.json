@@ -1,0 +1,18 @@
+{
+  "measurements": [
+    { "subject": "minimal-bridge", "target": "x86_64-unknown-linux-gnu", "metric": "binary_size", "value": 3000000 },
+    { "subject": "full-bridge", "target": "x86_64-unknown-linux-gnu", "metric": "binary_size", "value": 5200000 },
+    { "subject": "onoff_node", "target": "x86_64-unknown-linux-gnu", "metric": "binary_size", "value": 2500000 },
+    { "subject": "minimal-bridge", "target": "x86_64-unknown-linux-gnu", "metric": "rss", "value": 9000000 },
+    { "subject": "minimal-bridge", "target": "x86_64-unknown-linux-gnu", "metric": "rss_high_water", "value": 9500000 },
+    { "subject": "full-bridge", "target": "x86_64-unknown-linux-gnu", "metric": "rss", "value": 10000000 },
+    { "subject": "full-bridge", "target": "x86_64-unknown-linux-gnu", "metric": "rss_high_water", "value": 10500000 },
+    { "subject": "onoff_node", "target": "x86_64-unknown-linux-gnu", "metric": "rss", "value": 14000000 },
+    { "subject": "onoff_node", "target": "x86_64-unknown-linux-gnu", "metric": "rss_high_water", "value": 14500000 },
+    { "subject": "onoff_node", "target": "x86_64-unknown-linux-gnu", "metric": "heap_peak", "value": 1500000 },
+    { "subject": "minimal-bridge", "target": "aarch64-unknown-linux-musl", "metric": "binary_size", "value": 3200000 },
+    { "subject": "full-bridge", "target": "aarch64-unknown-linux-musl", "metric": "binary_size", "value": 4100000 },
+    { "subject": "minimal-bridge", "target": "armv7-unknown-linux-musleabihf", "metric": "binary_size", "value": 2900000 }
+  ],
+  "duration_seconds": 412
+}

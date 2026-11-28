@@ -181,6 +181,22 @@ cargo install --locked cargo-deny   # once
 ./scripts/check.ps1                 # Windows
 ```
 
+## Footprint
+
+The binary is measured against budgets so that it keeps fitting small Linux boards. Two build
+profiles of the binary are measured: `minimal-bridge` (`--no-default-features --features
+role-bridge`, no MQTT adapter, no journald) and `full-bridge` (the default features); a
+`controller` profile follows with the controller role. `cargo xtask footprint` builds them with
+the Cargo profile `release-small` (stripped, fat LTO, one codegen unit), measures the binary
+size, the idle memory of `matter-rs run`, and the memory and heap peak of the engine example
+with 20 bridged devices, and compares the numbers with the budgets in
+[`footprint.toml`](footprint.toml); `--cross` adds the binary sizes for
+`aarch64-unknown-linux-musl` and `armv7-unknown-linux-musleabihf`, cross-built with
+[cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild). The measurement runs on Linux
+(memory from `/proc`); the footprint workflow runs it on every push and fails when a budget is
+exceeded, with the table in its summary. `cargo xtask footprint --bless` writes the measured
+values plus 15 % into `footprint.toml` and is refused in CI.
+
 ## Licence
 
 Licensed under the [Apache License, Version 2.0](LICENSE). See [NOTICE](NOTICE) for attributions.

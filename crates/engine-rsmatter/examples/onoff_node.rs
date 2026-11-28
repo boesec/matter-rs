@@ -12,6 +12,7 @@
 //! ```text
 //! onoff_node [--state-dir DIR] [--interface NAME] [--port N] [--discriminator N]
 //!            [--passcode N] [--ipv4-only] [--print-pairing] [--no-initial-device]
+//!            [--heap-stats]
 //! ```
 //!
 //! Unless `--no-initial-device` is given, the node starts with one on/off light at endpoint 2,
@@ -19,6 +20,12 @@
 //! directory also keeps the engine's fabrics. `--print-pairing` prints the manual pairing
 //! code and the QR text on standard output at start; both are secrets and are printed only on
 //! this explicit request (or on the `pairing` command below).
+//!
+//! `--heap-stats` prints the heap use of the process when it exits after `quit`: the lines
+//! `heap peak: <bytes>` (the most heap ever allocated at once) and `heap current: <bytes>`. The
+//! footprint measurement uses it as the heap peak of a node with bridged devices. The counting
+//! allocator behind it is the example's global allocator (see [`ALLOCATOR`]); library crates
+//! choose no allocator.
 //!
 //! # Line protocol on standard input
 //!
@@ -67,6 +74,7 @@
 //!
 //! Bridged Node is `0x0013` rev 3, Bridged Device Basic Information `0x0039` rev 6.
 
+use std::alloc::System;
 use std::collections::BTreeMap;
 use std::io::BufRead as _;
 use std::path::PathBuf;
@@ -82,6 +90,23 @@ use matter_rs_engine::{
     Value, VendorId, bridged_device,
 };
 use matter_rs_engine_rsmatter::RsMatterEngine;
+
+/// The global allocator of this binary: the system allocator, counted. It keeps the bytes
+/// allocated now and the most ever allocated at once, which `--heap-stats` prints on exit; the
+/// limit is never reached. It is installed whether or not the flag is given, because a global
+/// allocator is chosen at compile time; the counting costs two atomic operations per
+/// allocation. The wrapper comes from the `cap` crate: implementing `GlobalAlloc` is unsafe,
+/// and the workspace forbids unsafe code in every target.
+#[global_allocator]
+static ALLOCATOR: cap::Cap<System> = cap::Cap::new(System, usize::MAX);
+
+/// The lines `--heap-stats` prints on exit.
+fn heap_stats_lines(peak: usize, current: usize) -> [String; 2] {
+    [
+        format!("heap peak: {peak}"),
+        format!("heap current: {current}"),
+    ]
+}
 
 const AGGREGATOR: EndpointId = EndpointId::new(1);
 /// The endpoint of the initial light.
@@ -135,6 +160,7 @@ struct Options {
     ipv4_only: bool,
     print_pairing: bool,
     initial_device: bool,
+    heap_stats: bool,
 }
 
 fn parse_options() -> Result<Options, String> {
@@ -147,6 +173,7 @@ fn parse_options() -> Result<Options, String> {
         ipv4_only: false,
         print_pairing: false,
         initial_device: true,
+        heap_stats: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -172,6 +199,7 @@ fn parse_options() -> Result<Options, String> {
             "--ipv4-only" => options.ipv4_only = true,
             "--print-pairing" => options.print_pairing = true,
             "--no-initial-device" => options.initial_device = false,
+            "--heap-stats" => options.heap_stats = true,
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -1121,14 +1149,20 @@ fn run(options: Options) -> Result<(), String> {
     if quit_requested.load(Ordering::SeqCst) {
         let _ = commands.join();
     }
+    if options.heap_stats {
+        drop(product);
+        for line in heap_stats_lines(ALLOCATOR.max_allocated(), ALLOCATOR.allocated()) {
+            println!("{line}");
+        }
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        AttributeSpec, Command, Device, DeviceKind, Kind, Model, SemanticTag, Value, attribute,
-        event_line, level_field, parse_command, parse_value,
+        ALLOCATOR, AttributeSpec, Command, Device, DeviceKind, Kind, Model, SemanticTag, Value,
+        attribute, event_line, heap_stats_lines, level_field, parse_command, parse_value,
     };
     use matter_rs_engine::{
         AttributeId, ClusterId, CommandId, CommissioningState, Correlation, EndpointId, Event,
@@ -1137,6 +1171,40 @@ mod tests {
 
     fn ep(id: u16) -> EndpointId {
         EndpointId::new(id)
+    }
+
+    /// The counting allocator sees a large block while it is alive, and its peak never falls
+    /// when the block is freed. Other tests allocate in parallel, so the checks are bounds,
+    /// not exact values.
+    #[test]
+    fn counting_allocator_tracks_peak() {
+        const BLOCK: usize = 8 << 20;
+        let peak_before = ALLOCATOR.max_allocated();
+        let block = std::hint::black_box(vec![0x5a_u8; BLOCK]);
+        let current_with_block = ALLOCATOR.allocated();
+        let peak_with_block = ALLOCATOR.max_allocated();
+        assert!(
+            current_with_block >= BLOCK,
+            "current {current_with_block} must include the block of {BLOCK}"
+        );
+        assert!(peak_with_block >= BLOCK, "peak {peak_with_block}");
+        assert!(peak_with_block >= peak_before, "the peak never falls");
+        drop(block);
+        assert!(
+            ALLOCATOR.max_allocated() >= peak_with_block,
+            "freeing the block keeps the peak"
+        );
+    }
+
+    #[test]
+    fn heap_stats_lines_name_peak_and_current() {
+        assert_eq!(
+            heap_stats_lines(4096, 1024),
+            [
+                String::from("heap peak: 4096"),
+                String::from("heap current: 1024")
+            ]
+        );
     }
 
     #[test]

@@ -42,6 +42,7 @@ lower layers (section 3).
 | `matter-rs-mgmt-api` | `crates/mgmt-api` | 6 optional | no | Local management API | planned |
 | `matter-rs-ui` | `crates/ui` | 6 optional | no | Web UI on top of the management API | planned |
 | `matter-rs` | `crates/matter-rs` | 7 service binary | no | Wires everything by features, runs as a service | command line for the configuration in place; `run` starts the engine with the bridge role, logs through `tracing` (text, JSON or the journal) and stops cleanly on a signal; systemd unit and container image in `packaging/`; the adapter supervisor follows |
+| `matter-rs-xtask` | `crates/xtask` | tooling | no | Development tasks run as `cargo xtask <task>`: `footprint` builds the build profiles, measures binary size and memory and compares them with the budgets in `footprint.toml` | `footprint` in place |
 
 A skeleton crate compiles, documents its responsibility and layer at the crate root, forbids
 unsafe code, inherits the workspace lints, is `publish = false`, and exports its `Error` type
@@ -66,6 +67,7 @@ layers never depend on higher ones.
 | `matter-rs-mgmt-api` | `matter-rs-config` and everything below it |
 | `matter-rs-ui` | `matter-rs-mgmt-api` and everything below it |
 | `matter-rs` | everything |
+| `matter-rs-xtask` | nothing in the workspace; it builds and runs the binaries as processes |
 
 Two rules deserve their own sentence:
 
@@ -208,6 +210,17 @@ Library crates carry only the features that the binary forwards to them, plus `s
 `no_std` tier. The binary builds with its defaults and with
 `--no-default-features --features role-bridge`; CI checks both, so that a minimal build selects
 only its own features.
+
+**Build profiles.** Named feature sets of the binary, listed with their budgets in
+`footprint.toml` and measured by `cargo xtask footprint` with the Cargo profile `release-small`
+(the `release` profile plus `strip`, fat LTO and one codegen unit; `panic` stays `unwind`, because
+the adapter supervisor catches the panics of an adapter task):
+
+| Profile | Features | Status |
+|---|---|---|
+| `minimal-bridge` | `--no-default-features --features role-bridge` | measured |
+| `full-bridge` | the defaults | measured |
+| `controller` | `role-controller` | planned (release 2) |
 
 ## 10. Adding a crate or an adapter
 
