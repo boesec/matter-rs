@@ -71,4 +71,4 @@ device_kind = "dimmable-light"
 [example.budget]
 max_binary_bytes = 4_421_632
 max_rss_bytes = 5_487_616
-max_heap_peak_bytes = 161_792
+max_heap_peak_bytes = 100_000
