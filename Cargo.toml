@@ -71,6 +71,16 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
 tracing-log = { version = "0.2", default-features = false, features = ["log-tracer", "std"] }
 tracing-journald = "0.3.2"
 
+# The size-optimised release build of the footprint measurement (`cargo xtask footprint`).
+# `panic` stays `unwind`, as in `release`, because the adapter supervisor catches the panics of
+# an adapter task; the default `release` profile is left as it is.
+[profile.release-small]
+inherits = "release"
+strip = true
+lto = "fat"
+codegen-units = 1
+panic = "unwind"
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
